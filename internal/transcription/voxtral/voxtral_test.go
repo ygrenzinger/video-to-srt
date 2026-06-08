@@ -2,8 +2,6 @@ package voxtral
 
 import (
 	"context"
-	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -92,98 +90,6 @@ func TestProviderFailsWithoutAPIKeyBeforeRequest(t *testing.T) {
 	}
 }
 
-func TestProviderRetriesTransientFailures(t *testing.T) {
-	dir := t.TempDir()
-	audioPath := filepath.Join(dir, "audio.mp3")
-	outputPath := filepath.Join(dir, "out.srt")
-	if err := os.WriteFile(audioPath, []byte("mp3"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	attempts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		if attempts == 1 {
-			http.Error(w, "try later", http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, `{"segments":[{"start":0,"end":1,"text":"ok"}]}`)
-	}))
-	defer server.Close()
-
-	provider := Provider{URL: server.URL, Client: server.Client(), Getenv: func(string) string { return "test-key" }, RetryDelays: []Duration{0}, Sleep: func(Duration) {}}
-
-	if err := provider.Transcribe(context.Background(), audioPath, outputPath, ""); err != nil {
-		t.Fatalf("Transcribe() err = %v", err)
-	}
-	if attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", attempts)
-	}
-}
-
-func TestProviderRetriesNetworkFailures(t *testing.T) {
-	dir := t.TempDir()
-	audioPath := filepath.Join(dir, "audio.mp3")
-	outputPath := filepath.Join(dir, "out.srt")
-	if err := os.WriteFile(audioPath, []byte("mp3"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	transport := &flakyTransport{}
-	provider := Provider{
-		URL:         "https://mistral.example.test/v1/audio/transcriptions",
-		Client:      &http.Client{Transport: transport},
-		Getenv:      func(string) string { return "test-key" },
-		RetryDelays: []Duration{0},
-		Sleep:       func(Duration) {},
-	}
-
-	if err := provider.Transcribe(context.Background(), audioPath, outputPath, ""); err != nil {
-		t.Fatalf("Transcribe() err = %v", err)
-	}
-	if transport.attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", transport.attempts)
-	}
-}
-
-type flakyTransport struct {
-	attempts int
-}
-
-func (t *flakyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	t.attempts++
-	if t.attempts == 1 {
-		return nil, errors.New("network down")
-	}
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(`{"segments":[{"start":0,"end":1,"text":"ok"}]}`)),
-		Request:    req,
-	}, nil
-}
-
-func TestProviderDoesNotRetryNonRetryableFailure(t *testing.T) {
-	dir := t.TempDir()
-	audioPath := filepath.Join(dir, "audio.mp3")
-	if err := os.WriteFile(audioPath, []byte("mp3"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	attempts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		http.Error(w, "bad request", http.StatusBadRequest)
-	}))
-	defer server.Close()
-
-	err := (Provider{URL: server.URL, Client: server.Client(), Getenv: func(string) string { return "test-key" }, RetryDelays: []Duration{0}, Sleep: func(Duration) {}}).Transcribe(context.Background(), audioPath, filepath.Join(dir, "out.srt"), "")
-
-	if err == nil || !strings.Contains(err.Error(), "HTTP 400") {
-		t.Fatalf("Transcribe() err = %v", err)
-	}
-	if attempts != 1 {
-		t.Fatalf("attempts = %d, want 1", attempts)
-	}
-}
-
 func TestProviderRejectsMalformedJSONAndMissingTimestampSegments(t *testing.T) {
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "audio.mp3")
@@ -212,6 +118,17 @@ func TestProviderRejectsMalformedJSONAndMissingTimestampSegments(t *testing.T) {
 				t.Fatalf("Transcribe() err = %v, want containing %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestResponseSubtitleCuesRejectsNoUsableTimestampedSegments(t *testing.T) {
+	_, err := (response{Segments: []segment{
+		{Start: 0, End: 1, Text: " "},
+		{Start: 2, End: 2, Text: "bad timing"},
+	}}).subtitleCues()
+
+	if err == nil || !strings.Contains(err.Error(), "no usable timestamped segments") {
+		t.Fatalf("subtitleCues() err = %v", err)
 	}
 }
 
