@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,6 +56,80 @@ func TestRunDownloadsYouTubeSourceToAudioArtifact(t *testing.T) {
 	}
 }
 
+func TestRunExtractsLocalVideoSourceToAudioArtifact(t *testing.T) {
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "talk.final.mp4")
+	if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	audioPath := filepath.Join(dir, "talk.final.mp3")
+	srtPath := filepath.Join(dir, "talk.final.voxtral.srt")
+	var got LocalVideoRequest
+	runner := Runner{
+		ExtractLocalAudio: func(ctx context.Context, req LocalVideoRequest) (string, error) {
+			got = req
+			return audioPath, nil
+		},
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) error {
+			if req.AudioPath != audioPath {
+				t.Fatalf("transcribe audio path = %q", req.AudioPath)
+			}
+			if req.OutputPath != srtPath {
+				t.Fatalf("transcribe output path = %q, want %q", req.OutputPath, srtPath)
+			}
+			if req.Provider != "voxtral" {
+				t.Fatalf("provider = %q", req.Provider)
+			}
+			return nil
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--output-dir", dir, videoPath}, Streams{Stdout: &stdout, Stderr: &stderr}, runner)
+
+	if code != 0 {
+		t.Fatalf("Run() code = %d, stderr = %q", code, stderr.String())
+	}
+	if got.Path != videoPath {
+		t.Fatalf("local video path = %q", got.Path)
+	}
+	if got.OutputDir != dir {
+		t.Fatalf("local video output dir = %q, want %q", got.OutputDir, dir)
+	}
+	if !strings.Contains(stderr.String(), srtPath) {
+		t.Fatalf("stderr = %q, want final SRT path", stderr.String())
+	}
+}
+
+func TestRunAcceptsConfiguredLocalVideoExtensions(t *testing.T) {
+	dir := t.TempDir()
+	for _, ext := range []string{".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"} {
+		t.Run(ext, func(t *testing.T) {
+			videoPath := filepath.Join(dir, "clip"+ext)
+			if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			code := Run(context.Background(), []string{videoPath}, Streams{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, Runner{
+				ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
+					called = true
+					return filepath.Join(dir, "clip.mp3"), nil
+				},
+				Transcribe: func(context.Context, TranscriptionRequest) error {
+					return nil
+				},
+			})
+
+			if code != 0 {
+				t.Fatalf("Run() code = %d", code)
+			}
+			if !called {
+				t.Fatal("local extractor was not called")
+			}
+		})
+	}
+}
+
 func TestRunQuietPrintsOnlyFinalSRTPath(t *testing.T) {
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "Example [abc123].mp3")
@@ -68,6 +143,41 @@ func TestRunQuietPrintsOnlyFinalSRTPath(t *testing.T) {
 
 	if code != 0 {
 		t.Fatalf("Run() code = %d, stderr = %q", code, stderr.String())
+	}
+	if stdout.String() != srtPath+"\n" {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), srtPath+"\n")
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty quiet stderr", stderr.String())
+	}
+}
+
+func TestRunLocalVideoSourceSupportsProviderModelAndQuiet(t *testing.T) {
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "demo.mov")
+	if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	audioPath := filepath.Join(dir, "demo.mp3")
+	srtPath := filepath.Join(dir, "demo.grok.srt")
+	var got TranscriptionRequest
+	var stdout, stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--quiet", "--provider", "grok", "--model", "custom-model", "--output-dir", dir, videoPath}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
+		ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
+			return audioPath, nil
+		},
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) error {
+			got = req
+			return nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("Run() code = %d, stderr = %q", code, stderr.String())
+	}
+	if got.Provider != "grok" || got.Model != "custom-model" || got.AudioPath != audioPath || got.OutputPath != srtPath {
+		t.Fatalf("transcription request = %#v", got)
 	}
 	if stdout.String() != srtPath+"\n" {
 		t.Fatalf("stdout = %q, want %q", stdout.String(), srtPath+"\n")
@@ -96,6 +206,33 @@ func TestRunPassesYouTubeCookieOptions(t *testing.T) {
 	}
 	if got.Cookies != "cookies.txt" || got.CookiesFromBrowser != "chrome" {
 		t.Fatalf("cookie options = %q/%q", got.Cookies, got.CookiesFromBrowser)
+	}
+}
+
+func TestRunRejectsYouTubeCookieOptionsForLocalVideoSources(t *testing.T) {
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "clip.mp4")
+	if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	var stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--youtube-cookies", "cookies.txt", videoPath}, Streams{Stdout: &bytes.Buffer{}, Stderr: &stderr}, Runner{
+		ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
+			called = true
+			return "", nil
+		},
+	})
+
+	if code == 0 {
+		t.Fatal("Run() code = 0")
+	}
+	if called {
+		t.Fatal("local extractor was called")
+	}
+	if !strings.Contains(stderr.String(), "YouTube cookie options") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 
@@ -177,13 +314,24 @@ func TestRunRejectsUnsupportedProvider(t *testing.T) {
 }
 
 func TestRunRejectsBadArgumentsBeforeDownloading(t *testing.T) {
+	dir := t.TempDir()
+	unsupportedPath := filepath.Join(dir, "clip.txt")
+	if err := os.WriteFile(unsupportedPath, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	videoDir := filepath.Join(dir, "folder.mp4")
+	if err := os.Mkdir(videoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name string
 		argv []string
 	}{
 		{name: "missing", argv: nil},
 		{name: "extra", argv: []string{"https://youtu.be/abc123", "https://youtu.be/def456"}},
-		{name: "local path", argv: []string{"clip.mp4"}},
+		{name: "missing local video", argv: []string{filepath.Join(dir, "missing.mp4")}},
+		{name: "unsupported local extension", argv: []string{unsupportedPath}},
+		{name: "local video directory", argv: []string{videoDir}},
 		{name: "unsupported http", argv: []string{"https://example.com/clip.mp4"}},
 	}
 	for _, tt := range tests {
@@ -192,6 +340,10 @@ func TestRunRejectsBadArgumentsBeforeDownloading(t *testing.T) {
 			var stderr bytes.Buffer
 			code := Run(context.Background(), tt.argv, Streams{Stdout: &bytes.Buffer{}, Stderr: &stderr}, Runner{
 				DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+					called = true
+					return "", nil
+				},
+				ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
 					called = true
 					return "", nil
 				},

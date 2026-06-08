@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,9 +23,15 @@ type SourceRequest struct {
 	CookiesFromBrowser string
 }
 
+type LocalVideoRequest struct {
+	Path      string
+	OutputDir string
+}
+
 type Runner struct {
-	DownloadAudio func(context.Context, SourceRequest) (string, error)
-	Transcribe    func(context.Context, TranscriptionRequest) error
+	DownloadAudio     func(context.Context, SourceRequest) (string, error)
+	ExtractLocalAudio func(context.Context, LocalVideoRequest) (string, error)
+	Transcribe        func(context.Context, TranscriptionRequest) error
 }
 
 type Streams struct {
@@ -61,11 +68,16 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "Error: expected exactly one YouTube URL")
+		fmt.Fprintln(stderr, "Error: expected exactly one Media Source")
 		return 1
 	}
-	if !isYouTubeURL(fs.Arg(0)) {
-		fmt.Fprintln(stderr, "Error: expected a YouTube URL")
+	mediaSource, err := classifyMediaSource(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		return 1
+	}
+	if mediaSource.kind == mediaSourceLocalVideo && (*cookies != "" || *cookiesFromBrowser != "") {
+		fmt.Fprintln(stderr, "Error: YouTube cookie options can only be used with YouTube Sources")
 		return 1
 	}
 	if *provider != "voxtral" && *provider != "grok" {
@@ -76,6 +88,12 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 	if downloadAudio == nil {
 		downloadAudio = func(ctx context.Context, req SourceRequest) (string, error) {
 			return source.DownloadAudio(ctx, source.Request{URL: req.URL, OutputDir: req.OutputDir, Cookies: req.Cookies, CookiesFromBrowser: req.CookiesFromBrowser}, nil)
+		}
+	}
+	extractLocalAudio := runner.ExtractLocalAudio
+	if extractLocalAudio == nil {
+		extractLocalAudio = func(ctx context.Context, req LocalVideoRequest) (string, error) {
+			return source.ExtractLocalAudio(ctx, source.LocalRequest{Path: req.Path, OutputDir: req.OutputDir}, nil)
 		}
 	}
 	transcribe := runner.Transcribe
@@ -92,9 +110,15 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		}
 	}
 	if !*quiet {
-		fmt.Fprintln(stderr, "Downloading Audio Artifact...")
+		fmt.Fprintf(stderr, "%s Audio Artifact...\n", mediaSource.audioAction())
 	}
-	audioPath, err := downloadAudio(ctx, SourceRequest{URL: fs.Arg(0), OutputDir: *outputDir, Cookies: *cookies, CookiesFromBrowser: *cookiesFromBrowser})
+	var audioPath string
+	switch mediaSource.kind {
+	case mediaSourceYouTube:
+		audioPath, err = downloadAudio(ctx, SourceRequest{URL: mediaSource.value, OutputDir: *outputDir, Cookies: *cookies, CookiesFromBrowser: *cookiesFromBrowser})
+	case mediaSourceLocalVideo:
+		audioPath, err = extractLocalAudio(ctx, LocalVideoRequest{Path: mediaSource.value, OutputDir: *outputDir})
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
 		return 1
@@ -129,6 +153,58 @@ func providerDisplayName(provider string) string {
 func srtPath(audioPath, provider string) string {
 	ext := filepath.Ext(audioPath)
 	return strings.TrimSuffix(audioPath, ext) + "." + provider + ".srt"
+}
+
+type mediaSourceKind int
+
+const (
+	mediaSourceYouTube mediaSourceKind = iota
+	mediaSourceLocalVideo
+)
+
+type mediaSource struct {
+	kind  mediaSourceKind
+	value string
+}
+
+func (m mediaSource) audioAction() string {
+	if m.kind == mediaSourceLocalVideo {
+		return "Extracting"
+	}
+	return "Downloading"
+}
+
+func classifyMediaSource(input string) (mediaSource, error) {
+	if isYouTubeURL(input) {
+		return mediaSource{kind: mediaSourceYouTube, value: input}, nil
+	}
+	parsed, err := url.Parse(input)
+	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		return mediaSource{}, errors.New("non-YouTube HTTP media sources are not supported")
+	}
+	if !isAcceptedLocalVideoExtension(input) {
+		return mediaSource{}, fmt.Errorf("expected a YouTube URL or local video file (%s)", strings.Join(acceptedLocalVideoExtensions, ", "))
+	}
+	info, err := os.Stat(input)
+	if err != nil {
+		return mediaSource{}, fmt.Errorf("local video file is not readable: %w", err)
+	}
+	if info.IsDir() {
+		return mediaSource{}, errors.New("local video source must be a file, not a directory")
+	}
+	return mediaSource{kind: mediaSourceLocalVideo, value: input}, nil
+}
+
+var acceptedLocalVideoExtensions = []string{".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+
+func isAcceptedLocalVideoExtension(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	for _, accepted := range acceptedLocalVideoExtensions {
+		if ext == accepted {
+			return true
+		}
+	}
+	return false
 }
 
 func isYouTubeURL(input string) bool {
