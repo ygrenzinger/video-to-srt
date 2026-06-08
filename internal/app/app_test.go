@@ -152,6 +152,30 @@ func TestRunQuietPrintsOnlyFinalSRTPath(t *testing.T) {
 	}
 }
 
+func TestRunPrintsVersionAndExits(t *testing.T) {
+	oldVersion := Version
+	Version = "v1.2.3"
+	t.Cleanup(func() { Version = oldVersion })
+
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--version"}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
+		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+			t.Fatal("downloader was called")
+			return "", nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("Run() code = %d", code)
+	}
+	if stdout.String() != "v1.2.3\n" {
+		t.Fatalf("stdout = %q, want version", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty stderr", stderr.String())
+	}
+}
+
 func TestRunRemovesTemporaryAudioAfterSuccessfulTranscription(t *testing.T) {
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "Example [abc123].mp3")

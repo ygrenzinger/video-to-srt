@@ -46,6 +46,8 @@ type TranscriptionRequest struct {
 	OutputPath string
 }
 
+var Version = "dev"
+
 func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int {
 	stdout := streams.Stdout
 	if stdout == nil {
@@ -64,8 +66,13 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 	provider := fs.String("provider", "voxtral", "transcription provider")
 	model := fs.String("model", "", "transcription model")
 	quiet := fs.Bool("quiet", false, "only print the final SRT path")
+	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(argv); err != nil {
 		return 2
+	}
+	if *showVersion {
+		fmt.Fprintln(stdout, Version)
+		return 0
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "Error: expected exactly one Media Source")
