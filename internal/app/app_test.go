@@ -22,6 +22,9 @@ func TestRunDownloadsYouTubeSourceToAudioArtifact(t *testing.T) {
 			if req.AudioPath != audioPath {
 				t.Fatalf("transcribe audio path = %q", req.AudioPath)
 			}
+			if req.Model != "" {
+				t.Fatalf("transcribe model = %q, want provider default", req.Model)
+			}
 			if req.OutputPath != srtPath {
 				t.Fatalf("transcribe output path = %q, want %q", req.OutputPath, srtPath)
 			}
@@ -113,6 +116,29 @@ func TestRunPassesProviderAndModelToTranscriptionProvider(t *testing.T) {
 	}
 	if got.Provider != "voxtral" || got.Model != "custom-model" {
 		t.Fatalf("transcription request provider/model = %q/%q", got.Provider, got.Model)
+	}
+}
+
+func TestRunAcceptsGrokProvider(t *testing.T) {
+	dir := t.TempDir()
+	audioPath := filepath.Join(dir, "Example [abc123].mp3")
+	srtPath := filepath.Join(dir, "Example [abc123].grok.srt")
+	var got TranscriptionRequest
+	code := Run(context.Background(), []string{"--provider", "grok", "https://youtu.be/abc123"}, Streams{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, Runner{
+		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+			return audioPath, nil
+		},
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) error {
+			got = req
+			return nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("Run() code = %d", code)
+	}
+	if got.Provider != "grok" || got.Model != "" || got.OutputPath != srtPath {
+		t.Fatalf("transcription request = %#v", got)
 	}
 }
 

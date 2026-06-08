@@ -20,6 +20,10 @@ _Avoid_: model, backend
 The first supported Transcription Provider, using Mistral's Voxtral transcription model family.
 _Avoid_: Mistral provider
 
+**Grok**:
+A Transcription Provider using xAI's speech-to-text transcription service.
+_Avoid_: xAI backend, Grok model
+
 **Subtitle Cue**:
 One timestamped text item in an SRT output.
 _Avoid_: segment, line

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"video-to-srt/internal/source"
+	"video-to-srt/internal/transcription/grok"
 	"video-to-srt/internal/transcription/voxtral"
 )
 
@@ -54,7 +55,7 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 	cookies := fs.String("youtube-cookies", "", "cookies.txt file to pass to yt-dlp")
 	cookiesFromBrowser := fs.String("youtube-cookies-from-browser", "", "browser cookie store to pass to yt-dlp")
 	provider := fs.String("provider", "voxtral", "transcription provider")
-	model := fs.String("model", voxtral.DefaultModel, "transcription model")
+	model := fs.String("model", "", "transcription model")
 	quiet := fs.Bool("quiet", false, "only print the final SRT path")
 	if err := fs.Parse(argv); err != nil {
 		return 2
@@ -67,7 +68,7 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		fmt.Fprintln(stderr, "Error: expected a YouTube URL")
 		return 1
 	}
-	if *provider != "voxtral" {
+	if *provider != "voxtral" && *provider != "grok" {
 		fmt.Fprintf(stderr, "Error: unsupported provider %q\n", *provider)
 		return 1
 	}
@@ -80,7 +81,14 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 	transcribe := runner.Transcribe
 	if transcribe == nil {
 		transcribe = func(ctx context.Context, req TranscriptionRequest) error {
-			return voxtral.Provider{}.Transcribe(ctx, req.AudioPath, req.OutputPath, req.Model)
+			switch req.Provider {
+			case "voxtral":
+				return voxtral.Provider{}.Transcribe(ctx, req.AudioPath, req.OutputPath, req.Model)
+			case "grok":
+				return grok.Provider{}.Transcribe(ctx, req.AudioPath, req.OutputPath, req.Model)
+			default:
+				return fmt.Errorf("unsupported provider %q", req.Provider)
+			}
 		}
 	}
 	if !*quiet {
@@ -92,7 +100,7 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		return 1
 	}
 	if !*quiet {
-		fmt.Fprintln(stderr, "Transcribing Audio Artifact with Voxtral...")
+		fmt.Fprintf(stderr, "Transcribing Audio Artifact with %s...\n", providerDisplayName(*provider))
 	}
 	outputPath := srtPath(audioPath, *provider)
 	if err := transcribe(ctx, TranscriptionRequest{Provider: *provider, Model: *model, AudioPath: audioPath, OutputPath: outputPath}); err != nil {
@@ -105,6 +113,17 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		fmt.Fprintln(stderr, "Output:", outputPath)
 	}
 	return 0
+}
+
+func providerDisplayName(provider string) string {
+	switch provider {
+	case "grok":
+		return "Grok"
+	case "voxtral":
+		return "Voxtral"
+	default:
+		return provider
+	}
 }
 
 func srtPath(audioPath, provider string) string {
