@@ -110,7 +110,7 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		}
 	}
 	if !*quiet {
-		fmt.Fprintf(stderr, "%s Audio Artifact...\n", mediaSource.audioAction())
+		fmt.Fprintln(stderr, "Preparing Media Source...")
 	}
 	var audioPath string
 	switch mediaSource.kind {
@@ -124,11 +124,17 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		return 1
 	}
 	if !*quiet {
-		fmt.Fprintf(stderr, "Transcribing Audio Artifact with %s...\n", providerDisplayName(*provider))
+		fmt.Fprintf(stderr, "Transcribing with %s...\n", providerDisplayName(*provider))
 	}
 	outputPath := srtPath(audioPath, *provider)
-	if err := transcribe(ctx, TranscriptionRequest{Provider: *provider, Model: *model, AudioPath: audioPath, OutputPath: outputPath}); err != nil {
-		fmt.Fprintln(stderr, "Error:", err)
+	transcribeErr := transcribe(ctx, TranscriptionRequest{Provider: *provider, Model: *model, AudioPath: audioPath, OutputPath: outputPath})
+	cleanupErr := removeTemporaryAudio(audioPath)
+	if transcribeErr != nil {
+		fmt.Fprintln(stderr, "Error:", transcribeErr)
+		return 1
+	}
+	if cleanupErr != nil {
+		fmt.Fprintln(stderr, "Error:", cleanupErr)
 		return 1
 	}
 	if *quiet {
@@ -155,6 +161,13 @@ func srtPath(audioPath, provider string) string {
 	return strings.TrimSuffix(audioPath, ext) + "." + provider + ".srt"
 }
 
+func removeTemporaryAudio(audioPath string) error {
+	if err := os.Remove(audioPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove temporary audio file: %w", err)
+	}
+	return nil
+}
+
 type mediaSourceKind int
 
 const (
@@ -165,13 +178,6 @@ const (
 type mediaSource struct {
 	kind  mediaSourceKind
 	value string
-}
-
-func (m mediaSource) audioAction() string {
-	if m.kind == mediaSourceLocalVideo {
-		return "Extracting"
-	}
-	return "Downloading"
 }
 
 func classifyMediaSource(input string) (mediaSource, error) {

@@ -1,6 +1,6 @@
 # Video to SRT
 
-This context covers the language for turning a Media Source into an Audio Artifact and timestamped subtitles.
+This context covers the language for turning a Media Source into timestamped subtitles.
 
 ## Language
 
@@ -16,12 +16,8 @@ _Avoid_: input video, source file
 A readable local video file accepted by the CLI as a Media Source. Supported extensions are `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, and `.m4v`.
 _Avoid_: local audio, arbitrary file, source file
 
-**Audio Artifact**:
-The MP3 file created from a Media Source and used as the transcription input.
-_Avoid_: downloaded video, audio source
-
 **Transcription Provider**:
-A service that turns an Audio Artifact into timestamped Subtitle Cues.
+A service that turns a Media Source into timestamped Subtitle Cues.
 _Avoid_: model, backend
 
 **Voxtral**:

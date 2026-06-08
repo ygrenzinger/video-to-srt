@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestRunDownloadsYouTubeSourceToAudioArtifact(t *testing.T) {
+func TestRunDownloadsYouTubeSourceToTemporaryAudio(t *testing.T) {
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "Example [abc123].mp3")
 	srtPath := filepath.Join(dir, "Example [abc123].voxtral.srt")
@@ -56,7 +56,7 @@ func TestRunDownloadsYouTubeSourceToAudioArtifact(t *testing.T) {
 	}
 }
 
-func TestRunExtractsLocalVideoSourceToAudioArtifact(t *testing.T) {
+func TestRunExtractsLocalVideoSourceToTemporaryAudio(t *testing.T) {
 	dir := t.TempDir()
 	videoPath := filepath.Join(dir, "talk.final.mp4")
 	if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
@@ -149,6 +149,58 @@ func TestRunQuietPrintsOnlyFinalSRTPath(t *testing.T) {
 	}
 	if stderr.String() != "" {
 		t.Fatalf("stderr = %q, want empty quiet stderr", stderr.String())
+	}
+}
+
+func TestRunRemovesTemporaryAudioAfterSuccessfulTranscription(t *testing.T) {
+	dir := t.TempDir()
+	audioPath := filepath.Join(dir, "Example [abc123].mp3")
+	if err := os.WriteFile(audioPath, []byte("mp3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code := Run(context.Background(), []string{"https://youtu.be/abc123"}, Streams{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, Runner{
+		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+			return audioPath, nil
+		},
+		Transcribe: func(context.Context, TranscriptionRequest) error {
+			return nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("Run() code = %d", code)
+	}
+	if _, err := os.Stat(audioPath); !os.IsNotExist(err) {
+		t.Fatalf("temporary audio exists after successful transcription: %v", err)
+	}
+}
+
+func TestRunRemovesTemporaryAudioAfterFailedTranscription(t *testing.T) {
+	dir := t.TempDir()
+	audioPath := filepath.Join(dir, "Example [abc123].mp3")
+	if err := os.WriteFile(audioPath, []byte("mp3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"https://youtu.be/abc123"}, Streams{Stdout: &bytes.Buffer{}, Stderr: &stderr}, Runner{
+		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+			return audioPath, nil
+		},
+		Transcribe: func(context.Context, TranscriptionRequest) error {
+			return errFake("provider failed")
+		},
+	})
+
+	if code == 0 {
+		t.Fatal("Run() code = 0")
+	}
+	if _, err := os.Stat(audioPath); !os.IsNotExist(err) {
+		t.Fatalf("temporary audio exists after failed transcription: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "provider failed") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 

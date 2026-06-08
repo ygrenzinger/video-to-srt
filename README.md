@@ -1,6 +1,6 @@
 # video-to-srt
 
-`video-to-srt` is a Go CLI that turns a Media Source into an MP3 Audio Artifact and a timestamped SRT file using Voxtral or Grok.
+`video-to-srt` is a Go CLI that turns a Media Source into a SRT file using a Transcription Provider.
 
 ## Requirements
 
@@ -27,12 +27,10 @@ By default, generated files are written to the current directory.
 
 For YouTube Sources:
 
-- Audio Artifact: `<youtube title> [id].mp3`
 - SRT: `<youtube title> [id].<provider>.srt`
 
 For Local Video Sources:
 
-- Audio Artifact: `<local basename>.mp3`
 - SRT: `<local basename>.<provider>.srt`
 
 The command prints concise progress to stderr and reports the final SRT path when it succeeds.
@@ -53,9 +51,3 @@ go run ./cmd/video-to-srt \
 - `--youtube-cookies`: exported cookies file to pass to `yt-dlp`; valid only for YouTube Sources.
 - `--youtube-cookies-from-browser`: browser cookie store to pass to `yt-dlp`, such as `chrome` or `firefox`; valid only for YouTube Sources.
 - `--quiet`: print only the final SRT path to stdout.
-
-## Scope
-
-V1 accepts YouTube Sources and Local Video Sources. Local audio files, directories, non-YouTube HTTP media, JSONL logging, subtitle improvement, and language hints are out of scope.
-
-The SRT uses timestamped cues returned by the selected Transcription Provider. If the provider returns text without usable timestamps, the command fails instead of inventing approximate Subtitle Cue timing.
