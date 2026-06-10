@@ -30,6 +30,8 @@ type Request struct {
 	Sleep       func(time.Duration)
 }
 
+const maxCuesPerTranslationRequest = 100
+
 func Translate(ctx context.Context, req Request) ([]subtitles.Cue, error) {
 	apiKey := getenv(req)(req.APIKeyEnv)
 	if apiKey == "" {
@@ -39,6 +41,24 @@ func Translate(ctx context.Context, req Request) ([]subtitles.Cue, error) {
 	if model == "" {
 		model = req.DefaultModel
 	}
+	out := make([]subtitles.Cue, 0, len(req.Cues))
+	for start := 0; start < len(req.Cues); start += maxCuesPerTranslationRequest {
+		end := start + maxCuesPerTranslationRequest
+		if end > len(req.Cues) {
+			end = len(req.Cues)
+		}
+		batchReq := req
+		batchReq.Cues = req.Cues[start:end]
+		cues, err := translateBatch(ctx, batchReq, model, apiKey)
+		if err != nil {
+			return nil, fmt.Errorf("translate cues %d-%d: %w", start+1, end, err)
+		}
+		out = append(out, cues...)
+	}
+	return out, nil
+}
+
+func translateBatch(ctx context.Context, req Request, model, apiKey string) ([]subtitles.Cue, error) {
 	var lastErr error
 	delays := retryDelays(req)
 	for attempt := 0; attempt <= len(delays); attempt++ {
@@ -97,7 +117,11 @@ func translateOnce(ctx context.Context, req Request, model, apiKey string) ([]su
 	if err := json.Unmarshal([]byte(result.Choices[0].Message.Content), &translated); err != nil {
 		return nil, fmt.Errorf("%s translation content was not JSON: %w", req.ProviderName, err)
 	}
-	return mergeTranslatedCues(req.Cues, translated.Cues)
+	cues, err := mergeTranslatedCues(req.Cues, translated.Cues)
+	if err != nil {
+		return nil, providerError{message: fmt.Sprintf("%s translation response failed validation: %s", req.ProviderName, err), retryable: true, err: err}
+	}
+	return cues, nil
 }
 
 type chatRequest struct {
