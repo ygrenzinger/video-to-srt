@@ -26,7 +26,7 @@ type Provider struct {
 	Sleep       func(Duration)
 }
 
-func (p Provider) Transcribe(ctx context.Context, audioPath, outputPath, model string) error {
+func (p Provider) Transcribe(ctx context.Context, audioPath, outputPath, model string) ([]subtitles.Cue, error) {
 	return transport.Transcribe(ctx, transport.Request{
 		ProviderName: "voxtral",
 		URL:          p.URL,

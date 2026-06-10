@@ -16,10 +16,9 @@ import (
 	"video-to-srt/internal/subtitles"
 )
 
-func TestTranscribeUploadsAudioAndWritesSRT(t *testing.T) {
+func TestTranscribeUploadsAudioAndReturnsCues(t *testing.T) {
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "audio.mp3")
-	outputPath := filepath.Join(dir, "out.srt")
 	if err := os.WriteFile(audioPath, []byte("mp3"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -50,13 +49,12 @@ func TestTranscribeUploadsAudioAndWritesSRT(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := Transcribe(context.Background(), Request{
+	got, err := Transcribe(context.Background(), Request{
 		ProviderName: "test",
 		URL:          server.URL,
 		APIKeyEnv:    "TEST_API_KEY",
 		DefaultModel: "default-model",
 		AudioPath:    audioPath,
-		OutputPath:   outputPath,
 		FormFields:   []FormField{{Name: "timestamp_granularities", Value: "segment"}},
 		DecodeCues: func(io.Reader) ([]subtitles.Cue, error) {
 			return []subtitles.Cue{{StartMS: 1000, EndMS: 2000, Text: "ok"}}, nil
@@ -76,13 +74,8 @@ func TestTranscribeUploadsAudioAndWritesSRT(t *testing.T) {
 	if !sawFile {
 		t.Fatal("server did not receive audio file")
 	}
-	got, readErr := os.ReadFile(outputPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	want := "1\n00:00:01,000 --> 00:00:02,000\nok\n"
-	if string(got) != want {
-		t.Fatalf("SRT = %q\nwant %q", string(got), want)
+	if len(got) != 1 || got[0].StartMS != 1000 || got[0].EndMS != 2000 || got[0].Text != "ok" {
+		t.Fatalf("cues = %#v", got)
 	}
 }
 
@@ -105,14 +98,13 @@ func TestTranscribeUsesDefaultURLAndCustomModel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := Transcribe(context.Background(), Request{
+	_, err := Transcribe(context.Background(), Request{
 		ProviderName: "test",
 		DefaultURL:   server.URL,
 		APIKeyEnv:    "TEST_API_KEY",
 		Model:        "custom-model",
 		DefaultModel: "default-model",
 		AudioPath:    audioPath,
-		OutputPath:   filepath.Join(dir, "out.srt"),
 		DecodeCues: func(io.Reader) ([]subtitles.Cue, error) {
 			return []subtitles.Cue{{StartMS: 0, EndMS: 1000, Text: "ok"}}, nil
 		},
@@ -135,7 +127,7 @@ func TestTranscribeFailsWithoutAPIKeyBeforeRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := Transcribe(context.Background(), Request{
+	_, err := Transcribe(context.Background(), Request{
 		ProviderName: "test",
 		URL:          server.URL,
 		APIKeyEnv:    "TEST_API_KEY",
@@ -180,13 +172,12 @@ func TestTranscribeRetriesTransientFailures(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := Transcribe(context.Background(), Request{
+			_, err := Transcribe(context.Background(), Request{
 				ProviderName: "test",
 				URL:          server.URL,
 				APIKeyEnv:    "TEST_API_KEY",
 				DefaultModel: "default-model",
 				AudioPath:    audioPath,
-				OutputPath:   filepath.Join(dir, "out.srt"),
 				DecodeCues: func(io.Reader) ([]subtitles.Cue, error) {
 					return []subtitles.Cue{{StartMS: 0, EndMS: 1000, Text: "ok"}}, nil
 				},
@@ -213,19 +204,17 @@ func TestTranscribeRetriesTransientFailures(t *testing.T) {
 func TestTranscribeRetriesNetworkFailures(t *testing.T) {
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "audio.mp3")
-	outputPath := filepath.Join(dir, "out.srt")
 	if err := os.WriteFile(audioPath, []byte("mp3"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	transport := &flakyTransport{}
 
-	err := Transcribe(context.Background(), Request{
+	_, err := Transcribe(context.Background(), Request{
 		ProviderName: "test",
 		URL:          "https://example.test/transcriptions",
 		APIKeyEnv:    "TEST_API_KEY",
 		DefaultModel: "default-model",
 		AudioPath:    audioPath,
-		OutputPath:   outputPath,
 		DecodeCues: func(io.Reader) ([]subtitles.Cue, error) {
 			return []subtitles.Cue{{StartMS: 0, EndMS: 1000, Text: "ok"}}, nil
 		},
@@ -271,13 +260,12 @@ func TestTranscribeReturnsDecodeErrors(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := Transcribe(context.Background(), Request{
+	_, err := Transcribe(context.Background(), Request{
 		ProviderName: "test",
 		URL:          server.URL,
 		APIKeyEnv:    "TEST_API_KEY",
 		DefaultModel: "default-model",
 		AudioPath:    audioPath,
-		OutputPath:   filepath.Join(dir, "out.srt"),
 		DecodeCues: func(reader io.Reader) ([]subtitles.Cue, error) {
 			var result struct {
 				OK bool `json:"ok"`

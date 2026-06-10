@@ -37,10 +37,10 @@ type Request struct {
 	Sleep       func(time.Duration)
 }
 
-func Transcribe(ctx context.Context, req Request) error {
+func Transcribe(ctx context.Context, req Request) ([]subtitles.Cue, error) {
 	apiKey := getenv(req)(req.APIKeyEnv)
 	if apiKey == "" {
-		return fmt.Errorf("missing required environment variable: %s", req.APIKeyEnv)
+		return nil, fmt.Errorf("missing required environment variable: %s", req.APIKeyEnv)
 	}
 	model := req.Model
 	if model == "" {
@@ -49,20 +49,20 @@ func Transcribe(ctx context.Context, req Request) error {
 	var lastErr error
 	delays := retryDelays(req)
 	for attempt := 0; attempt <= len(delays); attempt++ {
-		err := transcribeOnce(ctx, req, model, apiKey)
+		cues, err := transcribeOnce(ctx, req, model, apiKey)
 		if err == nil {
-			return nil
+			return cues, nil
 		}
 		lastErr = err
 		if attempt == len(delays) || !isRetryable(err) {
-			return err
+			return nil, err
 		}
 		sleep(req)(delays[attempt])
 	}
-	return lastErr
+	return nil, lastErr
 }
 
-func transcribeOnce(ctx context.Context, req Request, model, apiKey string) error {
+func transcribeOnce(ctx context.Context, req Request, model, apiKey string) ([]subtitles.Cue, error) {
 	bodyReader, bodyWriter := io.Pipe()
 	multipartWriter := multipart.NewWriter(bodyWriter)
 	go func() {
@@ -96,23 +96,23 @@ func transcribeOnce(ctx context.Context, req Request, model, apiKey string) erro
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url(req), bodyReader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", multipartWriter.FormDataContentType())
 	resp, err := client(req).Do(httpReq)
 	if err != nil {
-		return providerError{message: req.ProviderName + " transcription failed: " + err.Error(), retryable: true, err: err}
+		return nil, providerError{message: req.ProviderName + " transcription failed: " + err.Error(), retryable: true, err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return providerError{message: fmt.Sprintf("%s transcription failed: HTTP %d", req.ProviderName, resp.StatusCode), statusCode: resp.StatusCode, retryable: resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500}
+		return nil, providerError{message: fmt.Sprintf("%s transcription failed: HTTP %d", req.ProviderName, resp.StatusCode), statusCode: resp.StatusCode, retryable: resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500}
 	}
 	cues, err := req.DecodeCues(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return subtitles.AtomicWriteSRT(req.OutputPath, cues)
+	return cues, nil
 }
 
 type providerError struct {

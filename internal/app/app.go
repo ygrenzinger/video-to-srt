@@ -12,8 +12,11 @@ import (
 	"strings"
 
 	"video-to-srt/internal/source"
-	"video-to-srt/internal/transcription/grok"
+	"video-to-srt/internal/subtitles"
+	groktranscription "video-to-srt/internal/transcription/grok"
 	"video-to-srt/internal/transcription/voxtral"
+	groktranslation "video-to-srt/internal/translation/grok"
+	mistraltranslation "video-to-srt/internal/translation/mistral"
 )
 
 type SourceRequest struct {
@@ -31,7 +34,8 @@ type LocalVideoRequest struct {
 type Runner struct {
 	DownloadAudio     func(context.Context, SourceRequest) (string, error)
 	ExtractLocalAudio func(context.Context, LocalVideoRequest) (string, error)
-	Transcribe        func(context.Context, TranscriptionRequest) error
+	Transcribe        func(context.Context, TranscriptionRequest) ([]Cue, error)
+	Translate         func(context.Context, TranslationRequest) ([]Cue, error)
 }
 
 type Streams struct {
@@ -45,6 +49,16 @@ type TranscriptionRequest struct {
 	AudioPath  string
 	OutputPath string
 }
+
+type TranslationRequest struct {
+	Provider       string
+	Model          string
+	TargetLanguage string
+	Cues           []Cue
+	OutputPath     string
+}
+
+type Cue = subtitles.Cue
 
 var Version = "dev"
 
@@ -65,7 +79,10 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 	cookiesFromBrowser := fs.String("youtube-cookies-from-browser", "", "browser cookie store to pass to yt-dlp")
 	provider := fs.String("provider", "voxtral", "transcription provider")
 	model := fs.String("model", "", "transcription model")
-	quiet := fs.Bool("quiet", false, "only print the final SRT path")
+	targetLanguage := fs.String("target-language", "", "target language for translated subtitles")
+	translationProvider := fs.String("translation-provider", "", "translation provider")
+	translationModel := fs.String("translation-model", "", "translation model")
+	quiet := fs.Bool("quiet", false, "only print generated SRT paths")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(argv); err != nil {
 		return 2
@@ -78,6 +95,26 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		fmt.Fprintln(stderr, "Error: expected exactly one Media Source")
 		return 1
 	}
+	if *targetLanguage != "" && !isAcceptedTargetLanguage(*targetLanguage) {
+		fmt.Fprintf(stderr, "Error: unsupported target language %q\n", *targetLanguage)
+		return 1
+	}
+	translate := runner.Translate
+	if translate == nil {
+		translate = func(ctx context.Context, req TranslationRequest) ([]Cue, error) {
+			switch req.Provider {
+			case "mistral":
+				return mistraltranslation.Provider{}.Translate(ctx, req.TargetLanguage, req.Cues, req.Model)
+			case "grok":
+				return groktranslation.Provider{}.Translate(ctx, req.TargetLanguage, req.Cues, req.Model)
+			default:
+				return nil, fmt.Errorf("unsupported translation provider %q", req.Provider)
+			}
+		}
+	}
+	if isSubtitleSourcePath(fs.Arg(0)) {
+		return runSubtitleSource(ctx, fs.Arg(0), *targetLanguage, *translationProvider, *translationModel, *quiet, stdout, stderr, translate)
+	}
 	mediaSource, err := classifyMediaSource(fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
@@ -89,6 +126,10 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 	}
 	if *provider != "voxtral" && *provider != "grok" {
 		fmt.Fprintf(stderr, "Error: unsupported provider %q\n", *provider)
+		return 1
+	}
+	if *translationProvider != "" && *translationProvider != "mistral" && *translationProvider != "grok" {
+		fmt.Fprintf(stderr, "Error: unsupported translation provider %q\n", *translationProvider)
 		return 1
 	}
 	downloadAudio := runner.DownloadAudio
@@ -105,14 +146,14 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 	}
 	transcribe := runner.Transcribe
 	if transcribe == nil {
-		transcribe = func(ctx context.Context, req TranscriptionRequest) error {
+		transcribe = func(ctx context.Context, req TranscriptionRequest) ([]Cue, error) {
 			switch req.Provider {
 			case "voxtral":
 				return voxtral.Provider{}.Transcribe(ctx, req.AudioPath, req.OutputPath, req.Model)
 			case "grok":
-				return grok.Provider{}.Transcribe(ctx, req.AudioPath, req.OutputPath, req.Model)
+				return groktranscription.Provider{}.Transcribe(ctx, req.AudioPath, req.OutputPath, req.Model)
 			default:
-				return fmt.Errorf("unsupported provider %q", req.Provider)
+				return nil, fmt.Errorf("unsupported provider %q", req.Provider)
 			}
 		}
 	}
@@ -134,7 +175,10 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		fmt.Fprintf(stderr, "Transcribing with %s...\n", providerDisplayName(*provider))
 	}
 	outputPath := srtPath(audioPath, *provider)
-	transcribeErr := transcribe(ctx, TranscriptionRequest{Provider: *provider, Model: *model, AudioPath: audioPath, OutputPath: outputPath})
+	cues, transcribeErr := transcribe(ctx, TranscriptionRequest{Provider: *provider, Model: *model, AudioPath: audioPath, OutputPath: outputPath})
+	if transcribeErr == nil && cues != nil {
+		transcribeErr = subtitles.AtomicWriteSRT(outputPath, cues)
+	}
 	cleanupErr := removeTemporaryAudio(audioPath)
 	if transcribeErr != nil {
 		fmt.Fprintln(stderr, "Error:", transcribeErr)
@@ -143,6 +187,30 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 	if cleanupErr != nil {
 		fmt.Fprintln(stderr, "Error:", cleanupErr)
 		return 1
+	}
+	if *targetLanguage != "" {
+		selectedTranslationProvider := *translationProvider
+		if selectedTranslationProvider == "" {
+			selectedTranslationProvider = defaultTranslationProvider(*provider)
+		}
+		translatedPath := translatedSRTPath(outputPath, *targetLanguage)
+		translatedCues, err := translate(ctx, TranslationRequest{Provider: selectedTranslationProvider, Model: *translationModel, TargetLanguage: *targetLanguage, Cues: cues, OutputPath: translatedPath})
+		if err != nil {
+			fmt.Fprintln(stderr, "Error:", err)
+			return 1
+		}
+		if err := subtitles.AtomicWriteSRT(translatedPath, translatedCues); err != nil {
+			fmt.Fprintln(stderr, "Error:", err)
+			return 1
+		}
+		if *quiet {
+			fmt.Fprintln(stdout, outputPath)
+			fmt.Fprintln(stdout, translatedPath)
+		} else {
+			fmt.Fprintln(stderr, "Output:", outputPath)
+			fmt.Fprintln(stderr, "Translated output:", translatedPath)
+		}
+		return 0
 	}
 	if *quiet {
 		fmt.Fprintln(stdout, outputPath)
@@ -166,6 +234,58 @@ func providerDisplayName(provider string) string {
 func srtPath(audioPath, provider string) string {
 	ext := filepath.Ext(audioPath)
 	return strings.TrimSuffix(audioPath, ext) + "." + provider + ".srt"
+}
+
+func translatedSRTPath(sourceSRTPath, targetLanguage string) string {
+	ext := filepath.Ext(sourceSRTPath)
+	return strings.TrimSuffix(sourceSRTPath, ext) + "." + targetLanguage + ext
+}
+
+func defaultTranslationProvider(transcriptionProvider string) string {
+	if transcriptionProvider == "grok" {
+		return "grok"
+	}
+	return "mistral"
+}
+
+func runSubtitleSource(ctx context.Context, path, targetLanguage, translationProvider, translationModel string, quiet bool, stdout, stderr io.Writer, translate func(context.Context, TranslationRequest) ([]Cue, error)) int {
+	if targetLanguage == "" {
+		fmt.Fprintln(stderr, "Error: Subtitle Source requires --target-language")
+		return 1
+	}
+	if translationProvider == "" {
+		translationProvider = "mistral"
+	}
+	if translationProvider != "mistral" && translationProvider != "grok" {
+		fmt.Fprintf(stderr, "Error: unsupported translation provider %q\n", translationProvider)
+		return 1
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(stderr, "Error: subtitle source is not readable:", err)
+		return 1
+	}
+	cues, err := subtitles.ParseSRT(string(data))
+	if err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		return 1
+	}
+	outputPath := translatedSRTPath(path, targetLanguage)
+	translatedCues, err := translate(ctx, TranslationRequest{Provider: translationProvider, Model: translationModel, TargetLanguage: targetLanguage, Cues: cues, OutputPath: outputPath})
+	if err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		return 1
+	}
+	if err := subtitles.AtomicWriteSRT(outputPath, translatedCues); err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		return 1
+	}
+	if quiet {
+		fmt.Fprintln(stdout, outputPath)
+	} else {
+		fmt.Fprintln(stderr, "Translated output:", outputPath)
+	}
+	return 0
 }
 
 func removeTemporaryAudio(audioPath string) error {
@@ -220,6 +340,10 @@ func isAcceptedLocalVideoExtension(path string) bool {
 	return false
 }
 
+func isSubtitleSourcePath(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".srt")
+}
+
 func isYouTubeURL(input string) bool {
 	parsed, err := url.Parse(input)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -232,4 +356,17 @@ func isYouTubeURL(input string) bool {
 	default:
 		return false
 	}
+}
+
+var acceptedTargetLanguages = map[string]struct{}{
+	"ar": {}, "bn": {}, "br": {}, "ca": {}, "cs": {}, "da": {}, "de": {}, "el": {}, "en": {}, "es": {},
+	"fa": {}, "fi": {}, "fr": {}, "gu": {}, "he": {}, "hi": {}, "hr": {}, "id": {}, "it": {}, "ja": {},
+	"kn": {}, "ko": {}, "lo": {}, "mr": {}, "ms": {}, "ne": {}, "nl": {}, "no": {}, "pl": {}, "pt": {},
+	"pa": {}, "ro": {}, "ru": {}, "sr": {}, "sv": {}, "ta": {}, "te": {}, "th": {}, "tl": {}, "tr": {},
+	"uk": {}, "ur": {}, "vi": {}, "zh": {},
+}
+
+func isAcceptedTargetLanguage(language string) bool {
+	_, ok := acceptedTargetLanguages[language]
+	return ok
 }

@@ -31,3 +31,15 @@ _Avoid_: xAI backend, Grok model
 **Subtitle Cue**:
 One timestamped text item in an SRT output.
 _Avoid_: segment, line
+
+**Target Language**:
+The requested language for translated Subtitle Cues. Target Language values are simple language codes, not regional locale tags.
+_Avoid_: locale, output language
+
+**Translation Provider**:
+A service that translates Subtitle Cue text while preserving cue timing.
+_Avoid_: transcription provider, model, backend
+
+**Subtitle Source**:
+An existing SRT file accepted by the CLI for translation-only retry.
+_Avoid_: Media Source, source file

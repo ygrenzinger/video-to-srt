@@ -49,3 +49,33 @@ func TestAtomicWriteSRTDoesNotOverwriteExistingFileOnInvalidCue(t *testing.T) {
 		t.Fatalf("file = %q, want existing contents", string(data))
 	}
 }
+
+func TestParseSRTParsesSubtitleCues(t *testing.T) {
+	input := "1\n00:00:01,000 --> 00:00:02,500\nHello\nworld\n\n2\n00:00:03,000 --> 00:00:04,000\nGoodbye\n"
+
+	got, err := ParseSRT(input)
+
+	if err != nil {
+		t.Fatalf("ParseSRT() err = %v", err)
+	}
+	want := []Cue{
+		{StartMS: 1000, EndMS: 2500, Text: "Hello\nworld"},
+		{StartMS: 3000, EndMS: 4000, Text: "Goodbye"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ParseSRT() len = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("cue %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseSRTRejectsInvalidTiming(t *testing.T) {
+	_, err := ParseSRT("1\n00:00:02,000 --> 00:00:01,000\nbad\n")
+
+	if err == nil {
+		t.Fatal("ParseSRT() err = nil")
+	}
+}

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestProviderTranscribesWordTimestampsToSRT(t *testing.T) {
+func TestProviderTranscribesWordTimestampsToSubtitleCues(t *testing.T) {
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "Example [abc123].mp3")
 	outputPath := filepath.Join(dir, "Example [abc123].grok.srt")
@@ -58,7 +58,7 @@ func TestProviderTranscribesWordTimestampsToSRT(t *testing.T) {
 		},
 	}
 
-	err := provider.Transcribe(context.Background(), audioPath, outputPath, "")
+	got, err := provider.Transcribe(context.Background(), audioPath, outputPath, "")
 
 	if err != nil {
 		t.Fatalf("Transcribe() err = %v", err)
@@ -66,13 +66,8 @@ func TestProviderTranscribesWordTimestampsToSRT(t *testing.T) {
 	if !sawFile {
 		t.Fatal("server did not receive audio file")
 	}
-	got, readErr := os.ReadFile(outputPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	want := "1\n00:00:01,250 --> 00:00:02,480\nHello world.\n"
-	if string(got) != want {
-		t.Fatalf("SRT = %q\nwant %q", string(got), want)
+	if len(got) != 1 || got[0].StartMS != 1250 || got[0].EndMS != 2480 || got[0].Text != "Hello world." {
+		t.Fatalf("cues = %#v", got)
 	}
 }
 
@@ -83,7 +78,7 @@ func TestProviderFailsWithoutAPIKeyBeforeRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := (Provider{URL: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }}).Transcribe(context.Background(), "missing.mp3", "out.srt", "")
+	_, err := (Provider{URL: server.URL, Client: server.Client(), Getenv: func(string) string { return "" }}).Transcribe(context.Background(), "missing.mp3", "out.srt", "")
 
 	if err == nil || !strings.Contains(err.Error(), "XAI_API_KEY") {
 		t.Fatalf("Transcribe() err = %v", err)
@@ -105,18 +100,13 @@ func TestProviderTranscribesSegmentsToPlainSRT(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := (Provider{URL: server.URL, Client: server.Client(), Getenv: func(string) string { return "test-key" }}).Transcribe(context.Background(), audioPath, outputPath, "")
+	got, err := (Provider{URL: server.URL, Client: server.Client(), Getenv: func(string) string { return "test-key" }}).Transcribe(context.Background(), audioPath, outputPath, "")
 
 	if err != nil {
 		t.Fatalf("Transcribe() err = %v", err)
 	}
-	got, readErr := os.ReadFile(outputPath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	want := "1\n00:00:00,500 --> 00:00:01,250\nBonjour\n"
-	if string(got) != want {
-		t.Fatalf("SRT = %q\nwant %q", string(got), want)
+	if len(got) != 1 || got[0].StartMS != 500 || got[0].EndMS != 1250 || got[0].Text != "Bonjour" {
+		t.Fatalf("cues = %#v", got)
 	}
 }
 
@@ -142,7 +132,7 @@ func TestProviderRejectsMalformedJSONAndMissingTimestampCues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := (Provider{URL: server.URL, Client: server.Client(), Getenv: func(string) string { return "test-key" }}).Transcribe(context.Background(), audioPath, outputPath, "")
+			_, err := (Provider{URL: server.URL, Client: server.Client(), Getenv: func(string) string { return "test-key" }}).Transcribe(context.Background(), audioPath, outputPath, "")
 
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Transcribe() err = %v, want containing %q", err, tt.want)

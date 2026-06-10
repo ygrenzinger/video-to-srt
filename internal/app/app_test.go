@@ -19,7 +19,7 @@ func TestRunDownloadsYouTubeSourceToTemporaryAudio(t *testing.T) {
 			got = req
 			return audioPath, nil
 		},
-		Transcribe: func(ctx context.Context, req TranscriptionRequest) error {
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) ([]Cue, error) {
 			if req.AudioPath != audioPath {
 				t.Fatalf("transcribe audio path = %q", req.AudioPath)
 			}
@@ -32,7 +32,7 @@ func TestRunDownloadsYouTubeSourceToTemporaryAudio(t *testing.T) {
 			if req.Provider != "voxtral" {
 				t.Fatalf("provider = %q", req.Provider)
 			}
-			return nil
+			return nil, nil
 		},
 	}
 
@@ -70,7 +70,7 @@ func TestRunExtractsLocalVideoSourceToTemporaryAudio(t *testing.T) {
 			got = req
 			return audioPath, nil
 		},
-		Transcribe: func(ctx context.Context, req TranscriptionRequest) error {
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) ([]Cue, error) {
 			if req.AudioPath != audioPath {
 				t.Fatalf("transcribe audio path = %q", req.AudioPath)
 			}
@@ -80,7 +80,7 @@ func TestRunExtractsLocalVideoSourceToTemporaryAudio(t *testing.T) {
 			if req.Provider != "voxtral" {
 				t.Fatalf("provider = %q", req.Provider)
 			}
-			return nil
+			return nil, nil
 		},
 	}
 
@@ -115,8 +115,8 @@ func TestRunAcceptsConfiguredLocalVideoExtensions(t *testing.T) {
 					called = true
 					return filepath.Join(dir, "clip.mp3"), nil
 				},
-				Transcribe: func(context.Context, TranscriptionRequest) error {
-					return nil
+				Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+					return nil, nil
 				},
 			})
 
@@ -138,7 +138,7 @@ func TestRunQuietPrintsOnlyFinalSRTPath(t *testing.T) {
 
 	code := Run(context.Background(), []string{"--quiet", "https://youtu.be/abc123"}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
 		DownloadAudio: func(context.Context, SourceRequest) (string, error) { return audioPath, nil },
-		Transcribe:    func(context.Context, TranscriptionRequest) error { return nil },
+		Transcribe:    func(context.Context, TranscriptionRequest) ([]Cue, error) { return nil, nil },
 	})
 
 	if code != 0 {
@@ -187,8 +187,8 @@ func TestRunRemovesTemporaryAudioAfterSuccessfulTranscription(t *testing.T) {
 		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
 			return audioPath, nil
 		},
-		Transcribe: func(context.Context, TranscriptionRequest) error {
-			return nil
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			return nil, nil
 		},
 	})
 
@@ -212,8 +212,8 @@ func TestRunRemovesTemporaryAudioAfterFailedTranscription(t *testing.T) {
 		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
 			return audioPath, nil
 		},
-		Transcribe: func(context.Context, TranscriptionRequest) error {
-			return errFake("provider failed")
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			return nil, errFake("provider failed")
 		},
 	})
 
@@ -243,9 +243,9 @@ func TestRunLocalVideoSourceSupportsProviderModelAndQuiet(t *testing.T) {
 		ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
 			return audioPath, nil
 		},
-		Transcribe: func(ctx context.Context, req TranscriptionRequest) error {
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) ([]Cue, error) {
 			got = req
-			return nil
+			return nil, nil
 		},
 	})
 
@@ -270,8 +270,8 @@ func TestRunPassesYouTubeCookieOptions(t *testing.T) {
 			got = req
 			return "audio.mp3", nil
 		},
-		Transcribe: func(context.Context, TranscriptionRequest) error {
-			return nil
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			return nil, nil
 		},
 	}
 
@@ -318,9 +318,9 @@ func TestRunPassesProviderAndModelToTranscriptionProvider(t *testing.T) {
 		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
 			return "audio.mp3", nil
 		},
-		Transcribe: func(ctx context.Context, req TranscriptionRequest) error {
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) ([]Cue, error) {
 			got = req
-			return nil
+			return nil, nil
 		},
 	})
 
@@ -341,9 +341,9 @@ func TestRunAcceptsGrokProvider(t *testing.T) {
 		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
 			return audioPath, nil
 		},
-		Transcribe: func(ctx context.Context, req TranscriptionRequest) error {
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) ([]Cue, error) {
 			got = req
-			return nil
+			return nil, nil
 		},
 	})
 
@@ -355,14 +355,189 @@ func TestRunAcceptsGrokProvider(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnsupportedTargetLanguageBeforePreparingSource(t *testing.T) {
+	called := false
+	var stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--target-language", "fr-FR", "https://youtu.be/abc123"}, Streams{Stdout: &bytes.Buffer{}, Stderr: &stderr}, Runner{
+		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+			called = true
+			return "", nil
+		},
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	if code == 0 {
+		t.Fatal("Run() code = 0")
+	}
+	if called {
+		t.Fatal("source preparation or transcription was called")
+	}
+	if !strings.Contains(stderr.String(), "unsupported target language") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunTranslatesMediaSourceWhenTargetLanguageIsRequested(t *testing.T) {
+	dir := t.TempDir()
+	audioPath := filepath.Join(dir, "talk.mp3")
+	sourcePath := filepath.Join(dir, "talk.voxtral.srt")
+	translatedPath := filepath.Join(dir, "talk.voxtral.fr.srt")
+	var gotTranscription TranscriptionRequest
+	var gotTranslation TranslationRequest
+	var stdout, stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--target-language", "fr", "--quiet", "https://youtu.be/abc123"}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
+		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+			return audioPath, nil
+		},
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) ([]Cue, error) {
+			gotTranscription = req
+			return []Cue{{StartMS: 1000, EndMS: 2000, Text: "Hello"}}, nil
+		},
+		Translate: func(ctx context.Context, req TranslationRequest) ([]Cue, error) {
+			gotTranslation = req
+			return []Cue{{StartMS: 1000, EndMS: 2000, Text: "Bonjour"}}, nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("Run() code = %d, stderr = %q", code, stderr.String())
+	}
+	if gotTranscription.OutputPath != sourcePath {
+		t.Fatalf("transcription output path = %q, want %q", gotTranscription.OutputPath, sourcePath)
+	}
+	if gotTranslation.Provider != "mistral" || gotTranslation.Model != "" || gotTranslation.TargetLanguage != "fr" || gotTranslation.OutputPath != translatedPath {
+		t.Fatalf("translation request = %#v", gotTranslation)
+	}
+	if len(gotTranslation.Cues) != 1 || gotTranslation.Cues[0].Text != "Hello" {
+		t.Fatalf("translation cues = %#v", gotTranslation.Cues)
+	}
+	if stdout.String() != sourcePath+"\n"+translatedPath+"\n" {
+		t.Fatalf("stdout = %q, want both SRT paths", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty quiet stderr", stderr.String())
+	}
+	gotSource, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gotSource), "Hello") {
+		t.Fatalf("source SRT = %q", string(gotSource))
+	}
+	gotTranslated, err := os.ReadFile(translatedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gotTranslated), "Bonjour") {
+		t.Fatalf("translated SRT = %q", string(gotTranslated))
+	}
+}
+
+func TestRunKeepsSourceSRTAndPrintsNoQuietSuccessPathsWhenTranslationFails(t *testing.T) {
+	dir := t.TempDir()
+	audioPath := filepath.Join(dir, "talk.mp3")
+	sourcePath := filepath.Join(dir, "talk.voxtral.srt")
+	translatedPath := filepath.Join(dir, "talk.voxtral.fr.srt")
+	var stdout, stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--target-language", "fr", "--quiet", "https://youtu.be/abc123"}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
+		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+			return audioPath, nil
+		},
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			return []Cue{{StartMS: 1000, EndMS: 2000, Text: "Hello"}}, nil
+		},
+		Translate: func(context.Context, TranslationRequest) ([]Cue, error) {
+			return nil, errFake("translation failed")
+		},
+	})
+
+	if code == 0 {
+		t.Fatal("Run() code = 0")
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want no quiet success paths", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "translation failed") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Fatalf("source SRT was not kept: %v", err)
+	}
+	if _, err := os.Stat(translatedPath); !os.IsNotExist(err) {
+		t.Fatalf("translated SRT exists after failed translation: %v", err)
+	}
+}
+
+func TestRunTranslatesSubtitleSourceWhenTargetLanguageIsRequested(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "talk.voxtral.srt")
+	translatedPath := filepath.Join(dir, "talk.voxtral.fr.srt")
+	if err := os.WriteFile(sourcePath, []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var got TranslationRequest
+	var stdout, stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--quiet", "--target-language", "fr", sourcePath}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
+		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+			t.Fatal("downloader was called")
+			return "", nil
+		},
+		ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
+			t.Fatal("local extractor was called")
+			return "", nil
+		},
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			t.Fatal("transcription was called")
+			return nil, nil
+		},
+		Translate: func(ctx context.Context, req TranslationRequest) ([]Cue, error) {
+			got = req
+			return []Cue{{StartMS: 1000, EndMS: 2000, Text: "Bonjour"}}, nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("Run() code = %d, stderr = %q", code, stderr.String())
+	}
+	if got.Provider != "mistral" || got.TargetLanguage != "fr" || got.OutputPath != translatedPath {
+		t.Fatalf("translation request = %#v", got)
+	}
+	if len(got.Cues) != 1 || got.Cues[0].Text != "Hello" {
+		t.Fatalf("translation cues = %#v", got.Cues)
+	}
+	if stdout.String() != translatedPath+"\n" {
+		t.Fatalf("stdout = %q, want translated SRT path", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty quiet stderr", stderr.String())
+	}
+	if gotSource, err := os.ReadFile(sourcePath); err != nil || !strings.Contains(string(gotSource), "Hello") {
+		t.Fatalf("source SRT changed or unreadable: %q %v", string(gotSource), err)
+	}
+	gotTranslated, err := os.ReadFile(translatedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gotTranslated), "Bonjour") {
+		t.Fatalf("translated SRT = %q", string(gotTranslated))
+	}
+}
+
 func TestRunFailureDoesNotPrintMisleadingFinalPath(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"https://youtu.be/abc123"}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
 		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
 			return "audio.mp3", nil
 		},
-		Transcribe: func(context.Context, TranscriptionRequest) error {
-			return errFake("provider failed")
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			return nil, errFake("provider failed")
 		},
 	})
 
