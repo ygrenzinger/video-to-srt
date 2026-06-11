@@ -72,8 +72,16 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		stderr = os.Stderr
 	}
 
+	if wantsHelp(argv) {
+		printHelp(stdout)
+		return 0
+	}
+
 	fs := flag.NewFlagSet("video-to-srt", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		printHelp(stderr)
+	}
 	outputDir := fs.String("output-dir", ".", "directory for generated files")
 	cookies := fs.String("youtube-cookies", "", "cookies.txt file to pass to yt-dlp")
 	cookiesFromBrowser := fs.String("youtube-cookies-from-browser", "", "browser cookie store to pass to yt-dlp")
@@ -92,7 +100,7 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		return 0
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "Error: expected exactly one Media Source")
+		fmt.Fprintln(stderr, "Error: expected exactly one Media Source or Subtitle Source")
 		return 1
 	}
 	if *targetLanguage != "" && !isAcceptedTargetLanguage(*targetLanguage) {
@@ -239,6 +247,56 @@ func providerDisplayName(provider string) string {
 	default:
 		return provider
 	}
+}
+
+func wantsHelp(argv []string) bool {
+	for _, arg := range argv {
+		if arg == "-h" || arg == "-help" || arg == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+func printHelp(w io.Writer) {
+	fmt.Fprint(w, `Usage: video-to-srt [options] <media-source|subtitle-source.srt>
+
+Turn a Media Source into SRT subtitles, or translate an existing Subtitle Source.
+
+Accepted sources:
+  YouTube Source:      https://youtube.com/..., https://www.youtube.com/..., https://m.youtube.com/..., or https://youtu.be/...
+  Local Video Source:  readable local file with extension .mp4, .mov, .mkv, .webm, .avi, or .m4v
+  Local Audio Source:  readable local file with extension .mp3, .wav, .flac, or .ogg
+  Subtitle Source:     readable local .srt file; requires --target-language
+
+Examples:
+  video-to-srt 'https://www.youtube.com/watch?v=abc123'
+  video-to-srt ./talk.final.mp4
+  video-to-srt --provider grok ./talk.final.mp3
+  video-to-srt --target-language fr ./talk.final.mp4
+  video-to-srt --target-language fr ./talk.final.voxtral.srt
+
+Requirements:
+  YouTube Sources require yt-dlp on PATH.
+  Local Video Sources require ffmpeg on PATH.
+  Local Audio Sources do not require yt-dlp or ffmpeg.
+  Voxtral and Mistral translation use MISTRAL_API_KEY.
+  Grok transcription and translation use XAI_API_KEY.
+
+Options:
+  --output-dir <dir>                  Directory for generated files. Defaults to the current directory.
+  --provider <voxtral|grok>           Transcription Provider. Defaults to voxtral.
+  --model <model-id>                  Transcription Provider model id. Defaults to the provider default.
+  --target-language <code>            Translate Subtitle Cues to a supported Target Language code.
+  --translation-provider <mistral|grok>
+                                      Translation Provider. Defaults to mistral for voxtral and grok for grok.
+  --translation-model <model-id>      Translation Provider model id. Defaults to the provider default.
+  --youtube-cookies <path>            Cookies file to pass to yt-dlp. Valid only for YouTube Sources.
+  --youtube-cookies-from-browser <id> Browser cookie store to pass to yt-dlp, such as chrome or firefox.
+  --quiet                             Print only generated SRT paths to stdout.
+  --version                           Print version and exit.
+  --help                              Print this help and exit.
+`)
 }
 
 func srtPath(audioPath, provider string) string {

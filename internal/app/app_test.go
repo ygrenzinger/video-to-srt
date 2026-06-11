@@ -244,6 +244,61 @@ func TestRunPrintsVersionAndExits(t *testing.T) {
 	}
 }
 
+func TestRunPrintsHelpAndExits(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := false
+
+	code := Run(context.Background(), []string{"--help"}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
+		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
+			called = true
+			return "", nil
+		},
+		ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
+			called = true
+			return "", nil
+		},
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			called = true
+			return nil, nil
+		},
+		Translate: func(context.Context, TranslationRequest) ([]Cue, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("Run() code = %d, want 0", code)
+	}
+	if called {
+		t.Fatal("runner was called")
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty stderr", stderr.String())
+	}
+	help := stdout.String()
+	for _, want := range []string{
+		"Usage: video-to-srt [options] <media-source|subtitle-source.srt>",
+		"YouTube Source:",
+		"Local Video Source:",
+		".mp4, .mov, .mkv, .webm, .avi, or .m4v",
+		"Local Audio Source:",
+		".mp3, .wav, .flac, or .ogg",
+		"Subtitle Source:",
+		"requires --target-language",
+		"--provider <voxtral|grok>",
+		"--translation-provider <mistral|grok>",
+		"yt-dlp",
+		"ffmpeg",
+		"MISTRAL_API_KEY",
+		"XAI_API_KEY",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help output missing %q:\n%s", want, help)
+		}
+	}
+}
+
 func TestRunRemovesTemporaryAudioAfterSuccessfulTranscription(t *testing.T) {
 	dir := t.TempDir()
 	audioPath := filepath.Join(dir, "Example [abc123].mp3")

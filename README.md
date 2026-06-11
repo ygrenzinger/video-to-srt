@@ -14,6 +14,34 @@ Supported Translation Providers:
 - `mistral` using Mistral Large for Subtitle Cue translation
 - `grok` using Grok for Subtitle Cue translation
 
+## Quick Start
+
+Install the CLI, set the API key for the provider you want to use, then pass one Media Source:
+
+```sh
+export MISTRAL_API_KEY='your-mistral-api-key'
+video-to-srt 'https://www.youtube.com/watch?v=abc123'
+```
+
+For Grok transcription or translation, use `XAI_API_KEY`:
+
+```sh
+export XAI_API_KEY='your-xai-api-key'
+video-to-srt --provider grok ./talk.final.mp3
+```
+
+Transcribe and translate a Media Source:
+
+```sh
+video-to-srt --target-language fr ./talk.final.mp4
+```
+
+Translate an existing Subtitle Source without re-transcribing:
+
+```sh
+video-to-srt --target-language fr ./talk.final.voxtral.srt
+```
+
 ## Install With Homebrew
 
 On macOS or Linux, install `video-to-srt` from the Homebrew tap:
@@ -98,6 +126,22 @@ Translate an existing Subtitle Source without re-transcribing:
 video-to-srt --target-language fr ./talk.final.voxtral.srt
 ```
 
+## Accepted Sources
+
+The CLI accepts exactly one positional argument: either a Media Source for transcription, or a Subtitle Source for translation-only retry.
+
+Accepted Media Sources:
+
+- YouTube Source: `http` or `https` URL with host `youtube.com`, `www.youtube.com`, `m.youtube.com`, or `youtu.be`.
+- Local Video Source: readable local file with extension `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, or `.m4v`.
+- Local Audio Source: readable local file with extension `.mp3`, `.wav`, `.flac`, or `.ogg`.
+
+Accepted Subtitle Source:
+
+- Subtitle Source: readable local `.srt` file. This requires `--target-language` and translates the existing Subtitle Cues without re-transcribing media.
+
+Local file extension matching is case-insensitive. Current Media Source support does not include non-YouTube HTTP media, directories, arbitrary file extensions, batch processing, recursive directory processing, or audio-only extraction mode.
+
 Generated files are written to the current directory by default.
 
 For YouTube Sources, the SRT file is named:
@@ -159,12 +203,6 @@ video-to-srt \
   'https://www.youtube.com/watch?v=abc123'
 ```
 
-Supported Local Video Source extensions are `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, and `.m4v`.
-
-Supported Local Audio Source extensions are `.mp3`, `.wav`, `.flac`, and `.ogg`.
-
-Current Media Source support does not include non-YouTube HTTP media, batch processing, recursive directory processing, or audio-only extraction mode.
-
 Supported Target Language codes are `ar`, `bn`, `br`, `ca`, `cs`, `da`, `de`, `el`, `en`, `es`, `fa`, `fi`, `fr`, `gu`, `he`, `hi`, `hr`, `id`, `it`, `ja`, `kn`, `ko`, `lo`, `mr`, `ms`, `ne`, `nl`, `no`, `pl`, `pt`, `pa`, `ro`, `ru`, `sr`, `sv`, `ta`, `te`, `th`, `tl`, `tr`, `uk`, `ur`, `vi`, and `zh`.
 
 Target Language values are product-defined language codes, not provider capability guarantees. Translation quality depends on the selected Translation Provider and model.
@@ -177,12 +215,13 @@ Target Language values are product-defined language codes, not provider capabili
 --model <model-id>                  Provider-specific model id. Defaults to the provider default.
 --target-language <code>            Translate Subtitle Cues to a supported Target Language code.
 --translation-provider <mistral|grok>
-                                    Translation Provider. Defaults from the Transcription Provider for Media Sources.
+                                    Translation Provider. Defaults to mistral for voxtral and grok for grok.
 --translation-model <model-id>      Translation Provider model id. Defaults to the provider default.
 --youtube-cookies <path>            Cookies file to pass to yt-dlp. Valid only for YouTube Sources.
 --youtube-cookies-from-browser <id> Browser cookie store to pass to yt-dlp, such as chrome or firefox.
 --quiet                             Print only generated SRT paths to stdout.
 --version                           Print version and exit.
+--help                              Print help and exit.
 ```
 
 ## Build And Run From Source
