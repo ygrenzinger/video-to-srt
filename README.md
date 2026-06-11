@@ -39,7 +39,7 @@ video-to-srt --target-language fr ./talk.final.mp4
 Translate an existing Subtitle Source without re-transcribing:
 
 ```sh
-video-to-srt --target-language fr ./talk.final.voxtral.srt
+video-to-srt translate --target-language fr ./talk.final.voxtral.srt
 ```
 
 ## Install With Homebrew
@@ -123,12 +123,19 @@ video-to-srt --target-language fr ./talk.final.mp4
 Translate an existing Subtitle Source without re-transcribing:
 
 ```sh
-video-to-srt --target-language fr ./talk.final.voxtral.srt
+video-to-srt translate --target-language fr ./talk.final.voxtral.srt
 ```
 
 ## Accepted Sources
 
-The CLI accepts exactly one positional argument: either a Media Source for transcription, or a Subtitle Source for translation-only retry.
+The default command is `transcribe`, so these two commands are equivalent:
+
+```sh
+video-to-srt ./talk.final.mp4
+video-to-srt transcribe ./talk.final.mp4
+```
+
+`transcribe` accepts exactly one Media Source. Translation-only retry uses the explicit `translate` command and accepts exactly one Subtitle Source.
 
 Accepted Media Sources:
 
@@ -138,9 +145,9 @@ Accepted Media Sources:
 
 Accepted Subtitle Source:
 
-- Subtitle Source: readable local `.srt` file. This requires `--target-language` and translates the existing Subtitle Cues without re-transcribing media.
+- Subtitle Source: readable local `.srt` file passed to `video-to-srt translate`. This requires `--target-language` and translates the existing Subtitle Cues without re-transcribing media.
 
-Local file extension matching is case-insensitive. Current Media Source support does not include non-YouTube HTTP media, directories, arbitrary file extensions, batch processing, recursive directory processing, or audio-only extraction mode.
+Local file extension matching is case-insensitive. Current Media Source support does not include bare `.srt` translation shortcuts, non-YouTube HTTP media, directories, arbitrary file extensions, batch processing, recursive directory processing, or audio-only extraction mode.
 
 Generated files are written to the current directory by default.
 
@@ -195,6 +202,12 @@ video-to-srt --quiet ./talk.final.mp4
 
 With `--quiet` and Media Source translation, stdout contains two paths: the source-language SRT first and the translated SRT second. With `--quiet` and Subtitle Source translation, stdout contains only the translated SRT path.
 
+Translate an existing Subtitle Source:
+
+```sh
+video-to-srt translate --target-language fr ./talk.final.voxtral.srt
+```
+
 For YouTube Sources that need browser cookies, pass them through to `yt-dlp`:
 
 ```sh
@@ -209,6 +222,22 @@ Target Language values are product-defined language codes, not provider capabili
 
 ## Options
 
+Usage:
+
+```text
+video-to-srt [transcribe] [options] <media-source>
+video-to-srt translate [options] <subtitle-source.srt>
+```
+
+Commands:
+
+```text
+transcribe  Turn a Media Source into SRT subtitles. Optional by default.
+translate   Translate an existing Subtitle Source. Required for .srt inputs.
+```
+
+Transcription options:
+
 ```text
 --output-dir <dir>                  Directory for generated files. Defaults to the current directory.
 --provider <voxtral|grok>           Transcription Provider. Defaults to voxtral.
@@ -221,6 +250,17 @@ Target Language values are product-defined language codes, not provider capabili
 --youtube-cookies-from-browser <id> Browser cookie store to pass to yt-dlp, such as chrome or firefox.
 --quiet                             Print only generated SRT paths to stdout.
 --version                           Print version and exit.
+--help                              Print help and exit.
+```
+
+Translation-only options:
+
+```text
+--target-language <code>            Required. Translate Subtitle Cues to a supported Target Language code.
+--translation-provider <mistral|grok>
+                                    Translation Provider. Defaults to mistral.
+--translation-model <model-id>      Translation Provider model id. Defaults to the provider default.
+--quiet                             Print only the translated SRT path to stdout.
 --help                              Print help and exit.
 ```
 

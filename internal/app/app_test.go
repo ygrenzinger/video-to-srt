@@ -85,7 +85,7 @@ func TestRunExtractsLocalVideoSourceToTemporaryAudio(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"--output-dir", dir, videoPath}, Streams{Stdout: &stdout, Stderr: &stderr}, runner)
+	code := Run(context.Background(), []string{"transcribe", "--output-dir", dir, videoPath}, Streams{Stdout: &stdout, Stderr: &stderr}, runner)
 
 	if code != 0 {
 		t.Fatalf("Run() code = %d, stderr = %q", code, stderr.String())
@@ -278,7 +278,8 @@ func TestRunPrintsHelpAndExits(t *testing.T) {
 	}
 	help := stdout.String()
 	for _, want := range []string{
-		"Usage: video-to-srt [options] <media-source|subtitle-source.srt>",
+		"video-to-srt [transcribe] [options] <media-source>",
+		"video-to-srt translate [options] <subtitle-source.srt>",
 		"YouTube Source:",
 		"Local Video Source:",
 		".mp4, .mov, .mkv, .webm, .avi, or .m4v",
@@ -288,6 +289,8 @@ func TestRunPrintsHelpAndExits(t *testing.T) {
 		"requires --target-language",
 		"--provider <voxtral|grok>",
 		"--translation-provider <mistral|grok>",
+		"transcribe",
+		"translate",
 		"yt-dlp",
 		"ffmpeg",
 		"MISTRAL_API_KEY",
@@ -701,7 +704,7 @@ func TestRunTranslatesSubtitleSourceWhenTargetLanguageIsRequested(t *testing.T) 
 	var got TranslationRequest
 	var stdout, stderr bytes.Buffer
 
-	code := Run(context.Background(), []string{"--quiet", "--target-language", "fr", sourcePath}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
+	code := Run(context.Background(), []string{"translate", "--quiet", "--target-language", "fr", sourcePath}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
 		DownloadAudio: func(context.Context, SourceRequest) (string, error) {
 			t.Fatal("downloader was called")
 			return "", nil
@@ -747,6 +750,64 @@ func TestRunTranslatesSubtitleSourceWhenTargetLanguageIsRequested(t *testing.T) 
 	}
 }
 
+func TestRunRejectsBareSubtitleSource(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "talk.voxtral.srt")
+	if err := os.WriteFile(sourcePath, []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	var stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--target-language", "fr", sourcePath}, Streams{Stdout: &bytes.Buffer{}, Stderr: &stderr}, Runner{
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			called = true
+			return nil, nil
+		},
+		Translate: func(context.Context, TranslationRequest) ([]Cue, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	if code == 0 {
+		t.Fatal("Run() code = 0")
+	}
+	if called {
+		t.Fatal("runner was called")
+	}
+	if !strings.Contains(stderr.String(), "local video file") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunTranslateRequiresTargetLanguage(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "talk.voxtral.srt")
+	if err := os.WriteFile(sourcePath, []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	var stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"translate", sourcePath}, Streams{Stdout: &bytes.Buffer{}, Stderr: &stderr}, Runner{
+		Translate: func(context.Context, TranslationRequest) ([]Cue, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	if code == 0 {
+		t.Fatal("Run() code = 0")
+	}
+	if called {
+		t.Fatal("translation was called")
+	}
+	if !strings.Contains(stderr.String(), "--target-language") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunFailureDoesNotPrintMisleadingFinalPath(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"https://youtu.be/abc123"}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
@@ -776,7 +837,7 @@ func TestRunRejectsUnsupportedProvider(t *testing.T) {
 	if code == 0 {
 		t.Fatal("Run() code = 0")
 	}
-	if !strings.Contains(stderr.String(), "unsupported provider") {
+	if !strings.Contains(stderr.String(), "--provider must be one of") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

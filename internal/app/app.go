@@ -3,13 +3,14 @@ package app
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/alecthomas/kong"
 
 	"video-to-srt/internal/source"
 	"video-to-srt/internal/subtitles"
@@ -62,6 +63,33 @@ type Cue = subtitles.Cue
 
 var Version = "dev"
 
+type cliConfig struct {
+	Transcribe transcribeCommand `cmd:"" default:"withargs" help:"Turn a Media Source into SRT subtitles."`
+	Translate  translateCommand  `cmd:"" help:"Translate an existing Subtitle Source."`
+	Version    bool              `help:"Print version and exit."`
+}
+
+type transcribeCommand struct {
+	MediaSource               string `arg:"" name:"media-source" help:"YouTube Source, Local Video Source, or Local Audio Source."`
+	OutputDir                 string `name:"output-dir" default:"." type:"path" help:"Directory for generated files."`
+	Provider                  string `name:"provider" enum:"voxtral,grok" default:"voxtral" help:"Transcription Provider."`
+	Model                     string `name:"model" help:"Transcription Provider model id."`
+	TargetLanguage            string `name:"target-language" help:"Translate Subtitle Cues to a supported Target Language code."`
+	TranslationProvider       string `name:"translation-provider" help:"Translation Provider."`
+	TranslationModel          string `name:"translation-model" help:"Translation Provider model id."`
+	YouTubeCookies            string `name:"youtube-cookies" help:"Cookies file to pass to yt-dlp."`
+	YouTubeCookiesFromBrowser string `name:"youtube-cookies-from-browser" help:"Browser cookie store to pass to yt-dlp, such as chrome or firefox."`
+	Quiet                     bool   `name:"quiet" help:"Print only generated SRT paths to stdout."`
+}
+
+type translateCommand struct {
+	SubtitleSource      string `arg:"" name:"subtitle-source" type:"path" help:"Existing SRT file to translate."`
+	TargetLanguage      string `name:"target-language" required:"" help:"Translate Subtitle Cues to a supported Target Language code."`
+	TranslationProvider string `name:"translation-provider" help:"Translation Provider."`
+	TranslationModel    string `name:"translation-model" help:"Translation Provider model id."`
+	Quiet               bool   `name:"quiet" help:"Print only generated SRT paths to stdout."`
+}
+
 func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int {
 	stdout := streams.Stdout
 	if stdout == nil {
@@ -76,36 +104,15 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		printHelp(stdout)
 		return 0
 	}
-
-	fs := flag.NewFlagSet("video-to-srt", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		printHelp(stderr)
-	}
-	outputDir := fs.String("output-dir", ".", "directory for generated files")
-	cookies := fs.String("youtube-cookies", "", "cookies.txt file to pass to yt-dlp")
-	cookiesFromBrowser := fs.String("youtube-cookies-from-browser", "", "browser cookie store to pass to yt-dlp")
-	provider := fs.String("provider", "voxtral", "transcription provider")
-	model := fs.String("model", "", "transcription model")
-	targetLanguage := fs.String("target-language", "", "target language for translated subtitles")
-	translationProvider := fs.String("translation-provider", "", "translation provider")
-	translationModel := fs.String("translation-model", "", "translation model")
-	quiet := fs.Bool("quiet", false, "only print generated SRT paths")
-	showVersion := fs.Bool("version", false, "print version and exit")
-	if err := fs.Parse(argv); err != nil {
-		return 2
-	}
-	if *showVersion {
+	if wantsVersion(argv) {
 		fmt.Fprintln(stdout, Version)
 		return 0
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "Error: expected exactly one Media Source or Subtitle Source")
-		return 1
-	}
-	if *targetLanguage != "" && !isAcceptedTargetLanguage(*targetLanguage) {
-		fmt.Fprintf(stderr, "Error: unsupported target language %q\n", *targetLanguage)
-		return 1
+
+	cli, selectedCommand, err := parseCLI(argv, stdout, stderr)
+	if err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		return 2
 	}
 	translate := runner.Translate
 	if translate == nil {
@@ -120,24 +127,25 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 			}
 		}
 	}
-	if isSubtitleSourcePath(fs.Arg(0)) {
-		return runSubtitleSource(ctx, fs.Arg(0), *targetLanguage, *translationProvider, *translationModel, *quiet, stdout, stderr, translate)
+	if selectedCommand == "translate" {
+		return runSubtitleSource(ctx, cli.Translate.SubtitleSource, cli.Translate.TargetLanguage, cli.Translate.TranslationProvider, cli.Translate.TranslationModel, cli.Translate.Quiet, stdout, stderr, translate)
 	}
-	mediaSource, err := classifyMediaSource(fs.Arg(0))
+	cmd := cli.Transcribe
+	if cmd.TargetLanguage != "" && !isAcceptedTargetLanguage(cmd.TargetLanguage) {
+		fmt.Fprintf(stderr, "Error: unsupported target language %q\n", cmd.TargetLanguage)
+		return 1
+	}
+	if cmd.TranslationProvider != "" && cmd.TranslationProvider != "mistral" && cmd.TranslationProvider != "grok" {
+		fmt.Fprintf(stderr, "Error: unsupported translation provider %q\n", cmd.TranslationProvider)
+		return 1
+	}
+	mediaSource, err := classifyMediaSource(cmd.MediaSource)
 	if err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
 		return 1
 	}
-	if mediaSource.kind != mediaSourceYouTube && (*cookies != "" || *cookiesFromBrowser != "") {
+	if mediaSource.kind != mediaSourceYouTube && (cmd.YouTubeCookies != "" || cmd.YouTubeCookiesFromBrowser != "") {
 		fmt.Fprintln(stderr, "Error: YouTube cookie options can only be used with YouTube Sources")
-		return 1
-	}
-	if *provider != "voxtral" && *provider != "grok" {
-		fmt.Fprintf(stderr, "Error: unsupported provider %q\n", *provider)
-		return 1
-	}
-	if *translationProvider != "" && *translationProvider != "mistral" && *translationProvider != "grok" {
-		fmt.Fprintf(stderr, "Error: unsupported translation provider %q\n", *translationProvider)
 		return 1
 	}
 	downloadAudio := runner.DownloadAudio
@@ -165,16 +173,16 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 			}
 		}
 	}
-	if !*quiet {
+	if !cmd.Quiet {
 		fmt.Fprintln(stderr, "Preparing Media Source...")
 	}
 	var audioPath string
 	cleanupAudio := true
 	switch mediaSource.kind {
 	case mediaSourceYouTube:
-		audioPath, err = downloadAudio(ctx, SourceRequest{URL: mediaSource.value, OutputDir: *outputDir, Cookies: *cookies, CookiesFromBrowser: *cookiesFromBrowser})
+		audioPath, err = downloadAudio(ctx, SourceRequest{URL: mediaSource.value, OutputDir: cmd.OutputDir, Cookies: cmd.YouTubeCookies, CookiesFromBrowser: cmd.YouTubeCookiesFromBrowser})
 	case mediaSourceLocalVideo:
-		audioPath, err = extractLocalAudio(ctx, LocalVideoRequest{Path: mediaSource.value, OutputDir: *outputDir})
+		audioPath, err = extractLocalAudio(ctx, LocalVideoRequest{Path: mediaSource.value, OutputDir: cmd.OutputDir})
 	case mediaSourceLocalAudio:
 		audioPath = mediaSource.value
 		cleanupAudio = false
@@ -183,14 +191,14 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		fmt.Fprintln(stderr, "Error:", err)
 		return 1
 	}
-	if !*quiet {
-		fmt.Fprintf(stderr, "Transcribing with %s...\n", providerDisplayName(*provider))
+	if !cmd.Quiet {
+		fmt.Fprintf(stderr, "Transcribing with %s...\n", providerDisplayName(cmd.Provider))
 	}
-	outputPath := srtPath(audioPath, *provider)
+	outputPath := srtPath(audioPath, cmd.Provider)
 	if mediaSource.kind == mediaSourceLocalAudio {
-		outputPath = outputSRTPath(*outputDir, audioPath, *provider)
+		outputPath = outputSRTPath(cmd.OutputDir, audioPath, cmd.Provider)
 	}
-	cues, transcribeErr := transcribe(ctx, TranscriptionRequest{Provider: *provider, Model: *model, AudioPath: audioPath, OutputPath: outputPath})
+	cues, transcribeErr := transcribe(ctx, TranscriptionRequest{Provider: cmd.Provider, Model: cmd.Model, AudioPath: audioPath, OutputPath: outputPath})
 	if transcribeErr == nil && cues != nil {
 		transcribeErr = subtitles.AtomicWriteSRT(outputPath, cues)
 	}
@@ -206,13 +214,13 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		fmt.Fprintln(stderr, "Error:", cleanupErr)
 		return 1
 	}
-	if *targetLanguage != "" {
-		selectedTranslationProvider := *translationProvider
+	if cmd.TargetLanguage != "" {
+		selectedTranslationProvider := cmd.TranslationProvider
 		if selectedTranslationProvider == "" {
-			selectedTranslationProvider = defaultTranslationProvider(*provider)
+			selectedTranslationProvider = defaultTranslationProvider(cmd.Provider)
 		}
-		translatedPath := translatedSRTPath(outputPath, *targetLanguage)
-		translatedCues, err := translate(ctx, TranslationRequest{Provider: selectedTranslationProvider, Model: *translationModel, TargetLanguage: *targetLanguage, Cues: cues, OutputPath: translatedPath})
+		translatedPath := translatedSRTPath(outputPath, cmd.TargetLanguage)
+		translatedCues, err := translate(ctx, TranslationRequest{Provider: selectedTranslationProvider, Model: cmd.TranslationModel, TargetLanguage: cmd.TargetLanguage, Cues: cues, OutputPath: translatedPath})
 		if err != nil {
 			fmt.Fprintln(stderr, "Error:", err)
 			return 1
@@ -221,7 +229,7 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 			fmt.Fprintln(stderr, "Error:", err)
 			return 1
 		}
-		if *quiet {
+		if cmd.Quiet {
 			fmt.Fprintln(stdout, outputPath)
 			fmt.Fprintln(stdout, translatedPath)
 		} else {
@@ -230,12 +238,40 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		}
 		return 0
 	}
-	if *quiet {
+	if cmd.Quiet {
 		fmt.Fprintln(stdout, outputPath)
 	} else {
 		fmt.Fprintln(stderr, "Output:", outputPath)
 	}
 	return 0
+}
+
+func parseCLI(argv []string, stdout, stderr io.Writer) (cliConfig, string, error) {
+	var cli cliConfig
+	parser, err := kong.New(&cli,
+		kong.Name("video-to-srt"),
+		kong.Description("Turn a Media Source into SRT subtitles, or translate an existing Subtitle Source."),
+		kong.Writers(stdout, stderr),
+		kong.Exit(func(int) {}),
+		kong.UsageOnError(),
+		kong.ConfigureHelp(kong.HelpOptions{
+			Compact:        true,
+			FlagsLast:      true,
+			WrapUpperBound: 100,
+		}),
+	)
+	if err != nil {
+		return cliConfig{}, "", err
+	}
+	parsed, err := parser.Parse(argv)
+	if err != nil {
+		return cliConfig{}, "", err
+	}
+	command := parsed.Command()
+	if strings.HasPrefix(command, "translate") {
+		return cli, "translate", nil
+	}
+	return cli, "transcribe", nil
 }
 
 func providerDisplayName(provider string) string {
@@ -258,8 +294,19 @@ func wantsHelp(argv []string) bool {
 	return false
 }
 
+func wantsVersion(argv []string) bool {
+	for _, arg := range argv {
+		if arg == "--version" {
+			return true
+		}
+	}
+	return false
+}
+
 func printHelp(w io.Writer) {
-	fmt.Fprint(w, `Usage: video-to-srt [options] <media-source|subtitle-source.srt>
+	fmt.Fprint(w, `Usage:
+  video-to-srt [transcribe] [options] <media-source>
+  video-to-srt translate [options] <subtitle-source.srt>
 
 Turn a Media Source into SRT subtitles, or translate an existing Subtitle Source.
 
@@ -271,10 +318,11 @@ Accepted sources:
 
 Examples:
   video-to-srt 'https://www.youtube.com/watch?v=abc123'
+  video-to-srt transcribe ./talk.final.mp4
   video-to-srt ./talk.final.mp4
   video-to-srt --provider grok ./talk.final.mp3
   video-to-srt --target-language fr ./talk.final.mp4
-  video-to-srt --target-language fr ./talk.final.voxtral.srt
+  video-to-srt translate --target-language fr ./talk.final.voxtral.srt
 
 Requirements:
   YouTube Sources require yt-dlp on PATH.
@@ -296,6 +344,10 @@ Options:
   --quiet                             Print only generated SRT paths to stdout.
   --version                           Print version and exit.
   --help                              Print this help and exit.
+
+Commands:
+  transcribe                           Turn a Media Source into SRT subtitles. Optional by default.
+  translate                            Translate an existing Subtitle Source. Required for .srt inputs.
 `)
 }
 
@@ -328,6 +380,14 @@ func defaultTranslationProvider(transcriptionProvider string) string {
 func runSubtitleSource(ctx context.Context, path, targetLanguage, translationProvider, translationModel string, quiet bool, stdout, stderr io.Writer, translate func(context.Context, TranslationRequest) ([]Cue, error)) int {
 	if targetLanguage == "" {
 		fmt.Fprintln(stderr, "Error: Subtitle Source requires --target-language")
+		return 1
+	}
+	if !isAcceptedTargetLanguage(targetLanguage) {
+		fmt.Fprintf(stderr, "Error: unsupported target language %q\n", targetLanguage)
+		return 1
+	}
+	if !isSubtitleSourcePath(path) {
+		fmt.Fprintln(stderr, "Error: Subtitle Source must be a .srt file")
 		return 1
 	}
 	if translationProvider == "" {
