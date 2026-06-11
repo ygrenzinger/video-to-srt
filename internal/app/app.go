@@ -120,7 +120,7 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		fmt.Fprintln(stderr, "Error:", err)
 		return 1
 	}
-	if mediaSource.kind == mediaSourceLocalVideo && (*cookies != "" || *cookiesFromBrowser != "") {
+	if mediaSource.kind != mediaSourceYouTube && (*cookies != "" || *cookiesFromBrowser != "") {
 		fmt.Fprintln(stderr, "Error: YouTube cookie options can only be used with YouTube Sources")
 		return 1
 	}
@@ -161,11 +161,15 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		fmt.Fprintln(stderr, "Preparing Media Source...")
 	}
 	var audioPath string
+	cleanupAudio := true
 	switch mediaSource.kind {
 	case mediaSourceYouTube:
 		audioPath, err = downloadAudio(ctx, SourceRequest{URL: mediaSource.value, OutputDir: *outputDir, Cookies: *cookies, CookiesFromBrowser: *cookiesFromBrowser})
 	case mediaSourceLocalVideo:
 		audioPath, err = extractLocalAudio(ctx, LocalVideoRequest{Path: mediaSource.value, OutputDir: *outputDir})
+	case mediaSourceLocalAudio:
+		audioPath = mediaSource.value
+		cleanupAudio = false
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
@@ -175,11 +179,17 @@ func Run(ctx context.Context, argv []string, streams Streams, runner Runner) int
 		fmt.Fprintf(stderr, "Transcribing with %s...\n", providerDisplayName(*provider))
 	}
 	outputPath := srtPath(audioPath, *provider)
+	if mediaSource.kind == mediaSourceLocalAudio {
+		outputPath = outputSRTPath(*outputDir, audioPath, *provider)
+	}
 	cues, transcribeErr := transcribe(ctx, TranscriptionRequest{Provider: *provider, Model: *model, AudioPath: audioPath, OutputPath: outputPath})
 	if transcribeErr == nil && cues != nil {
 		transcribeErr = subtitles.AtomicWriteSRT(outputPath, cues)
 	}
-	cleanupErr := removeTemporaryAudio(audioPath)
+	var cleanupErr error
+	if cleanupAudio {
+		cleanupErr = removeTemporaryAudio(audioPath)
+	}
 	if transcribeErr != nil {
 		fmt.Fprintln(stderr, "Error:", transcribeErr)
 		return 1
@@ -234,6 +244,15 @@ func providerDisplayName(provider string) string {
 func srtPath(audioPath, provider string) string {
 	ext := filepath.Ext(audioPath)
 	return strings.TrimSuffix(audioPath, ext) + "." + provider + ".srt"
+}
+
+func outputSRTPath(outputDir, sourcePath, provider string) string {
+	if outputDir == "" {
+		outputDir = "."
+	}
+	base := filepath.Base(sourcePath)
+	ext := filepath.Ext(base)
+	return filepath.Join(outputDir, strings.TrimSuffix(base, ext)+"."+provider+".srt")
 }
 
 func translatedSRTPath(sourceSRTPath, targetLanguage string) string {
@@ -300,6 +319,7 @@ type mediaSourceKind int
 const (
 	mediaSourceYouTube mediaSourceKind = iota
 	mediaSourceLocalVideo
+	mediaSourceLocalAudio
 )
 
 type mediaSource struct {
@@ -315,20 +335,24 @@ func classifyMediaSource(input string) (mediaSource, error) {
 	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
 		return mediaSource{}, errors.New("non-YouTube HTTP media sources are not supported")
 	}
-	if !isAcceptedLocalVideoExtension(input) {
-		return mediaSource{}, fmt.Errorf("expected a YouTube URL or local video file (%s)", strings.Join(acceptedLocalVideoExtensions, ", "))
+	if !isAcceptedLocalVideoExtension(input) && !isAcceptedLocalAudioExtension(input) {
+		return mediaSource{}, fmt.Errorf("expected a YouTube URL, local video file (%s), or local audio file (%s)", strings.Join(acceptedLocalVideoExtensions, ", "), strings.Join(acceptedLocalAudioExtensions, ", "))
 	}
 	info, err := os.Stat(input)
 	if err != nil {
-		return mediaSource{}, fmt.Errorf("local video file is not readable: %w", err)
+		return mediaSource{}, fmt.Errorf("%s is not readable: %w", localSourceKind(input), err)
 	}
 	if info.IsDir() {
-		return mediaSource{}, errors.New("local video source must be a file, not a directory")
+		return mediaSource{}, fmt.Errorf("%s must be a file, not a directory", localSourceKind(input))
+	}
+	if isAcceptedLocalAudioExtension(input) {
+		return mediaSource{kind: mediaSourceLocalAudio, value: input}, nil
 	}
 	return mediaSource{kind: mediaSourceLocalVideo, value: input}, nil
 }
 
 var acceptedLocalVideoExtensions = []string{".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+var acceptedLocalAudioExtensions = []string{".mp3", ".wav", ".flac", ".ogg"}
 
 func isAcceptedLocalVideoExtension(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
@@ -338,6 +362,23 @@ func isAcceptedLocalVideoExtension(path string) bool {
 		}
 	}
 	return false
+}
+
+func isAcceptedLocalAudioExtension(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	for _, accepted := range acceptedLocalAudioExtensions {
+		if ext == accepted {
+			return true
+		}
+	}
+	return false
+}
+
+func localSourceKind(path string) string {
+	if isAcceptedLocalAudioExtension(path) {
+		return "local audio source"
+	}
+	return "local video source"
 }
 
 func isSubtitleSourcePath(path string) bool {

@@ -2,7 +2,7 @@
 
 `video-to-srt` is a small CLI that turns a Media Source into a SRT file.
 
-It accepts either a YouTube Source or a Local Video Source, prepares audio from it, sends that audio to a Transcription Provider, and writes timestamped Subtitle Cues as `.srt`.
+It accepts a YouTube Source, Local Video Source, or Local Audio Source, prepares audio when needed, sends audio to a Transcription Provider, and writes timestamped Subtitle Cues as `.srt`.
 
 Supported Transcription Providers:
 
@@ -54,6 +54,7 @@ When installing manually, also install the external tools needed for the Media S
 
 - YouTube Sources require `yt-dlp` on `PATH`.
 - Local Video Sources require `ffmpeg` on `PATH`.
+- Local Audio Sources do not require `yt-dlp` or `ffmpeg`.
 
 Set an API key for the Transcription Provider you want to use:
 
@@ -79,6 +80,12 @@ Transcribe a Local Video Source:
 video-to-srt ./talk.final.mp4
 ```
 
+Transcribe a Local Audio Source:
+
+```sh
+video-to-srt ./talk.final.mp3
+```
+
 Transcribe and translate a Media Source:
 
 ```sh
@@ -100,6 +107,12 @@ For YouTube Sources, the SRT file is named:
 ```
 
 For Local Video Sources, the SRT file is named:
+
+```text
+<local basename>.<provider>.srt
+```
+
+For Local Audio Sources, the SRT file is named:
 
 ```text
 <local basename>.<provider>.srt
@@ -148,6 +161,10 @@ video-to-srt \
 
 Supported Local Video Source extensions are `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, and `.m4v`.
 
+Supported Local Audio Source extensions are `.mp3`, `.wav`, `.flac`, and `.ogg`.
+
+Current Media Source support does not include non-YouTube HTTP media, batch processing, recursive directory processing, or audio-only extraction mode.
+
 Supported Target Language codes are `ar`, `bn`, `br`, `ca`, `cs`, `da`, `de`, `el`, `en`, `es`, `fa`, `fi`, `fr`, `gu`, `he`, `hi`, `hr`, `id`, `it`, `ja`, `kn`, `ko`, `lo`, `mr`, `ms`, `ne`, `nl`, `no`, `pl`, `pt`, `pa`, `ro`, `ru`, `sr`, `sv`, `ta`, `te`, `th`, `tl`, `tr`, `uk`, `ur`, `vi`, and `zh`.
 
 Target Language values are product-defined language codes, not provider capability guarantees. Translation quality depends on the selected Translation Provider and model.
@@ -175,6 +192,7 @@ Requirements:
 - Go 1.23 or newer
 - `yt-dlp` available on `PATH` for YouTube Sources
 - `ffmpeg` available on `PATH` for Local Video Sources
+- Local Audio Sources can be used without `yt-dlp` or `ffmpeg`
 - `MISTRAL_API_KEY` for Voxtral, or `XAI_API_KEY` for Grok
 - `MISTRAL_API_KEY` for Mistral translation, or `XAI_API_KEY` for Grok translation
 

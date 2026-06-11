@@ -101,6 +101,74 @@ func TestRunExtractsLocalVideoSourceToTemporaryAudio(t *testing.T) {
 	}
 }
 
+func TestRunTranscribesLocalAudioSourceDirectly(t *testing.T) {
+	dir := t.TempDir()
+	sourceDir := t.TempDir()
+	audioPath := filepath.Join(sourceDir, "talk.final.mp3")
+	if err := os.WriteFile(audioPath, []byte("mp3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srtPath := filepath.Join(dir, "talk.final.voxtral.srt")
+	var got TranscriptionRequest
+	var stdout, stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--quiet", "--output-dir", dir, audioPath}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
+		ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
+			t.Fatal("local video extractor was called")
+			return "", nil
+		},
+		Transcribe: func(ctx context.Context, req TranscriptionRequest) ([]Cue, error) {
+			got = req
+			return nil, nil
+		},
+	})
+
+	if code != 0 {
+		t.Fatalf("Run() code = %d, stderr = %q", code, stderr.String())
+	}
+	if got.Provider != "voxtral" || got.AudioPath != audioPath || got.OutputPath != srtPath {
+		t.Fatalf("transcription request = %#v", got)
+	}
+	if stdout.String() != srtPath+"\n" {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), srtPath+"\n")
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty quiet stderr", stderr.String())
+	}
+	if _, err := os.Stat(audioPath); err != nil {
+		t.Fatalf("local audio source was not preserved: %v", err)
+	}
+}
+
+func TestRunAcceptsConfiguredLocalAudioExtensions(t *testing.T) {
+	dir := t.TempDir()
+	for _, ext := range []string{".mp3", ".wav", ".flac", ".ogg"} {
+		t.Run(ext, func(t *testing.T) {
+			audioPath := filepath.Join(dir, "clip"+ext)
+			if err := os.WriteFile(audioPath, []byte("audio"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			code := Run(context.Background(), []string{audioPath}, Streams{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, Runner{
+				Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+					called = true
+					return nil, nil
+				},
+			})
+
+			if code != 0 {
+				t.Fatalf("Run() code = %d", code)
+			}
+			if !called {
+				t.Fatal("transcription was not called")
+			}
+			if _, err := os.Stat(audioPath); err != nil {
+				t.Fatalf("local audio source was not preserved: %v", err)
+			}
+		})
+	}
+}
+
 func TestRunAcceptsConfiguredLocalVideoExtensions(t *testing.T) {
 	dir := t.TempDir()
 	for _, ext := range []string{".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"} {
@@ -263,6 +331,39 @@ func TestRunLocalVideoSourceSupportsProviderModelAndQuiet(t *testing.T) {
 	}
 }
 
+func TestRunLocalVideoExtractionFailureDoesNotTranscribe(t *testing.T) {
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "demo.mov")
+	if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	transcribed := false
+
+	code := Run(context.Background(), []string{"--quiet", videoPath}, Streams{Stdout: &stdout, Stderr: &stderr}, Runner{
+		ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
+			return "", errFake("ffmpeg failed")
+		},
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			transcribed = true
+			return nil, nil
+		},
+	})
+
+	if code == 0 {
+		t.Fatal("Run() code = 0")
+	}
+	if transcribed {
+		t.Fatal("transcription was called")
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want no final path", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "ffmpeg failed") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunPassesYouTubeCookieOptions(t *testing.T) {
 	var got SourceRequest
 	runner := Runner{
@@ -309,6 +410,67 @@ func TestRunRejectsYouTubeCookieOptionsForLocalVideoSources(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "YouTube cookie options") {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunRejectsYouTubeCookiesFromBrowserForLocalVideoSources(t *testing.T) {
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "clip.mp4")
+	if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	var stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--youtube-cookies-from-browser", "chrome", videoPath}, Streams{Stdout: &bytes.Buffer{}, Stderr: &stderr}, Runner{
+		ExtractLocalAudio: func(context.Context, LocalVideoRequest) (string, error) {
+			called = true
+			return "", nil
+		},
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	if code == 0 {
+		t.Fatal("Run() code = 0")
+	}
+	if called {
+		t.Fatal("local extraction or transcription was called")
+	}
+	if !strings.Contains(stderr.String(), "YouTube cookie options") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunRejectsYouTubeCookieOptionsForLocalAudioSources(t *testing.T) {
+	dir := t.TempDir()
+	audioPath := filepath.Join(dir, "clip.mp3")
+	if err := os.WriteFile(audioPath, []byte("mp3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	var stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"--youtube-cookies", "cookies.txt", audioPath}, Streams{Stdout: &bytes.Buffer{}, Stderr: &stderr}, Runner{
+		Transcribe: func(context.Context, TranscriptionRequest) ([]Cue, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	if code == 0 {
+		t.Fatal("Run() code = 0")
+	}
+	if called {
+		t.Fatal("transcription was called")
+	}
+	if !strings.Contains(stderr.String(), "YouTube cookie options") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if _, err := os.Stat(audioPath); err != nil {
+		t.Fatalf("local audio source was not preserved: %v", err)
 	}
 }
 
